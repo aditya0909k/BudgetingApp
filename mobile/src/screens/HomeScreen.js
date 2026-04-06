@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useMemo } from 'react';
 import { View, Text, FlatList, RefreshControl, Pressable } from 'react-native';
 import * as Haptics from 'expo-haptics';
+import * as WebBrowser from 'expo-web-browser';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAppContext } from '../context/AppContext';
 import { getTheme } from '../theme';
@@ -142,10 +143,19 @@ export default function HomeScreen() {
             Bank reconnection required
           </Text>
           {enrollmentErrors.map(e => (
-            <Text key={e.enrollmentId} style={{ color: colors.textMuted, fontSize: 13, textAlign: 'center', marginBottom: 4 }}>
-              {e.institutionName}: {e.error.includes('mfa') ? 'MFA required — re-link in Settings' : e.error}
+            <Text key={e.enrollmentId} style={{ color: colors.textMuted, fontSize: 13, textAlign: 'center', marginBottom: 8 }}>
+              {e.institutionName} needs to be re-linked.
             </Text>
           ))}
+          <Pressable
+            onPress={async () => {
+              await WebBrowser.openBrowserAsync(`${API_BASE_URL}/link`);
+              fetchData(true);
+            }}
+            style={{ paddingHorizontal: 24, paddingVertical: 10, borderRadius: 8, backgroundColor: colors.accent, marginTop: 4 }}
+          >
+            <Text style={{ color: '#000', fontWeight: '700', fontSize: 14 }}>Reconnect Bank</Text>
+          </Pressable>
         </View>
       );
     }
