@@ -17,18 +17,26 @@ const FILES = {
   accounts:          path.join(DATA_DIR, 'accounts.json'),
   budget:            path.join(DATA_DIR, 'budget.json'),
   excluded:          path.join(DATA_DIR, 'excluded.json'),
+  overrides:         path.join(DATA_DIR, 'overrides.json'),
+  pendingDates:      path.join(DATA_DIR, 'pending_dates.json'),
   weeklyHistory:     path.join(DATA_DIR, 'weeklyHistory.json'),
   monthlyHistory:    path.join(DATA_DIR, 'monthlyHistory.json'),
   txnCache:          path.join(DATA_DIR, 'transactions_cache.json'),
+  txnStore:          path.join(DATA_DIR, 'transactions_store.json'),
+  manualTxns:        path.join(DATA_DIR, 'manual_transactions.json'),
 };
 
 const DEFAULTS = {
   accounts:       { enrollments: [] },
   budget:         { weeklyBudget: 250 },
   excluded:       { excludedIds: [] },
+  overrides:      {},
+  pendingDates:   {},
   weeklyHistory:  {},
   monthlyHistory: {},
   txnCache:       { fetchedAt: null, enrollmentIds: [], transactions: [], enrollmentErrors: [] },
+  txnStore:       { lastSuccessAt: null, transactions: [] },
+  manualTxns:     [],
 };
 
 function ensureDataFiles() {
@@ -158,12 +166,21 @@ const CACHE_TTL = 60 * 60 * 1000;  // 60 minutes
 let _fetchInProgress = false;
 
 // Fetch ALL posted transactions from Teller and write to cache file.
+function pendingFingerprint(t) {
+  const merchant = (t.merchant_name || t.name || '').toLowerCase().replace(/[^a-z0-9]/g, '').substring(0, 20);
+  return `${t.account_id}|${Math.abs(parseFloat(t.amount)).toFixed(2)}|${merchant}`;
+}
+
 async function fetchAndCacheAll(enrollments) {
   if (_fetchInProgress) return null;
   _fetchInProgress = true;
+  try {
   const enrollmentIds = enrollments.map(e => e.enrollmentId);
   const all = [];
   const enrollmentErrors = [];
+
+  // Load pending dates map
+  const pendingDates = readJSON(FILES.pendingDates) || {};
 
   for (const enr of enrollments) {
     try {
@@ -171,7 +188,25 @@ async function fetchAndCacheAll(enrollments) {
       for (const acct of accounts) {
         const txns = await tellerGet(`/accounts/${acct.id}/transactions`, enr.accessToken);
         for (const t of txns) {
-          all.push(normalizeTellerTxn(t, enr.institutionName, acct.last_four));
+          const normalized = normalizeTellerTxn(t, enr.institutionName, acct.last_four);
+          const fp = pendingFingerprint(normalized);
+          if (normalized.pending) {
+            // Store pending date keyed by fingerprint
+            if (!pendingDates[fp]) pendingDates[fp] = { date: normalized.date, storedAt: new Date().toISOString() };
+          } else {
+            // Posted — use pending date if within 14 days
+            if (pendingDates[fp]) {
+              const pendingDate = new Date(pendingDates[fp].date + 'T12:00:00');
+              const postedDate = new Date(normalized.date + 'T12:00:00');
+              const diffDays = Math.round((postedDate - pendingDate) / 86400000);
+              if (diffDays >= 0 && diffDays <= 14) {
+                normalized.date = pendingDates[fp].date;
+                delete pendingDates[fp]; // only clean up on successful match
+              }
+              // if outside 14 days, leave entry in place — may match a later fetch
+            }
+          }
+          all.push(normalized);
         }
       }
     } catch (e) {
@@ -184,11 +219,32 @@ async function fetchAndCacheAll(enrollments) {
     }
   }
 
-  const cache = { fetchedAt: new Date().toISOString(), enrollmentIds, transactions: all, enrollmentErrors };
+  // Prune stale pending dates (> 30 days old)
+  const cutoff = Date.now() - 30 * 86400000;
+  for (const [fp, val] of Object.entries(pendingDates)) {
+    if (new Date(val.storedAt).getTime() < cutoff) delete pendingDates[fp];
+  }
+  writeJSON(FILES.pendingDates, pendingDates);
+
+  const now = new Date().toISOString();
+  const cache = { fetchedAt: now, enrollmentIds, transactions: all, enrollmentErrors };
   writeJSON(FILES.txnCache, cache);
+
+  // Merge into permanent store if we got any transactions
+  if (all.length > 0) {
+    const store = readJSON(FILES.txnStore) || { lastSuccessAt: null, transactions: [] };
+    const byId = {};
+    for (const t of store.transactions) byId[t.transaction_id] = t;
+    for (const t of all) byId[t.transaction_id] = t;
+    writeJSON(FILES.txnStore, { lastSuccessAt: now, transactions: Object.values(byId) });
+    console.log(`[store] merged — ${Object.values(byId).length} total transactions`);
+  }
+
   console.log(`[cache] refreshed — ${all.length} transactions, ${enrollmentErrors.length} errors`);
-  _fetchInProgress = false;
   return cache;
+  } finally {
+    _fetchInProgress = false;
+  }
 }
 
 // Returns { transactions, enrollmentErrors, fromCache }.
@@ -202,26 +258,58 @@ async function getTransactions(enrollments) {
   const ageMs = cache.fetchedAt ? Date.now() - new Date(cache.fetchedAt).getTime() : Infinity;
 
   if (sameEnrollments && cache.transactions && ageMs < CACHE_TTL) {
-    // Fresh cache (< 60 min) — return immediately, no Teller call
+    // Fresh cache — but if it's empty due to errors, fall back to store
+    if (cache.transactions.length === 0 && (cache.enrollmentErrors || []).length > 0) {
+      const store = readJSON(FILES.txnStore) || { lastSuccessAt: null, transactions: [] };
+      if (store.transactions.length > 0) {
+        console.log('[store] cache empty due to errors — serving persisted transactions');
+        return { transactions: store.transactions, enrollmentErrors: cache.enrollmentErrors, fromCache: true, staleData: true, lastSuccessAt: store.lastSuccessAt };
+      }
+    }
     return { transactions: cache.transactions, enrollmentErrors: cache.enrollmentErrors || [], fromCache: true };
   }
 
   if (sameEnrollments && cache.transactions) {
     // Stale cache (> 60 min) — return immediately, refresh Teller in background
-    setImmediate(() => fetchAndCacheAll(enrollments).catch(() => {}));
+    if (!_fetchInProgress) setImmediate(() => fetchAndCacheAll(enrollments).catch(() => {}));
+    if (cache.transactions.length === 0 && (cache.enrollmentErrors || []).length > 0) {
+      const store = readJSON(FILES.txnStore) || { lastSuccessAt: null, transactions: [] };
+      if (store.transactions.length > 0) {
+        return { transactions: store.transactions, enrollmentErrors: cache.enrollmentErrors, fromCache: true, staleData: true, lastSuccessAt: store.lastSuccessAt };
+      }
+    }
     return { transactions: cache.transactions, enrollmentErrors: cache.enrollmentErrors || [], fromCache: true };
   }
 
   // Cold (no cache at all) — fetch now and wait
   const fresh = await fetchAndCacheAll(enrollments);
   if (!fresh) {
-    // Another fetch was already in progress — return stale if available
+    // Another fetch was already in progress — return store if available
+    const store = readJSON(FILES.txnStore) || { lastSuccessAt: null, transactions: [] };
     return {
-      transactions:    cache.transactions || [],
+      transactions:     store.transactions,
       enrollmentErrors: cache.enrollmentErrors || [],
-      fromCache:       true,
+      fromCache:        true,
+      staleData:        true,
+      lastSuccessAt:    store.lastSuccessAt,
     };
   }
+
+  // If all enrollments errored, fall back to store
+  if (fresh.transactions.length === 0 && fresh.enrollmentErrors.length > 0) {
+    const store = readJSON(FILES.txnStore) || { lastSuccessAt: null, transactions: [] };
+    if (store.transactions.length > 0) {
+      console.log('[store] Teller failed — serving persisted transactions');
+      return {
+        transactions:     store.transactions,
+        enrollmentErrors: fresh.enrollmentErrors,
+        fromCache:        true,
+        staleData:        true,
+        lastSuccessAt:    store.lastSuccessAt,
+      };
+    }
+  }
+
   return { transactions: fresh.transactions, enrollmentErrors: fresh.enrollmentErrors, fromCache: false };
 }
 
@@ -277,9 +365,6 @@ function monthLabel(k) {
 
 async function runSnapshot() {
   try {
-    const { enrollments } = readJSON(FILES.accounts) || { enrollments: [] };
-    if (!enrollments.length) return;
-
     const { excludedIds } = readJSON(FILES.excluded) || { excludedIds: [] };
     const excludedSet = new Set(excludedIds);
     const { weeklyBudget } = readJSON(FILES.budget) || { weeklyBudget: 250 };
@@ -287,7 +372,15 @@ async function runSnapshot() {
     const weekRange  = getCurrentWeekRange();
     const monthRange = getCurrentMonthRange();
 
-    const { transactions: all } = await getTransactions(enrollments);
+    const { enrollments } = readJSON(FILES.accounts) || { enrollments: [] };
+    let tellerTxns = [];
+    if (enrollments.length) {
+      const { transactions } = await getTransactions(enrollments);
+      tellerTxns = transactions;
+    }
+    const manualAll = readJSON(FILES.manualTxns) || [];
+    const all = [...tellerTxns, ...manualAll];
+    if (!all.length) return;
 
     const filterRange = (start, end) =>
       all.filter(t => t.date >= start && t.date <= end);
@@ -297,7 +390,7 @@ async function runSnapshot() {
 
     const spent = txns =>
       txns
-        .filter(t => !excludedSet.has(t.transaction_id) && t.amount > 0)
+        .filter(t => !excludedSet.has(t.transaction_id) && typeof t.amount === 'number' && t.amount > 0)
         .reduce((s, t) => s + t.amount, 0);
 
     const weekSpent  = spent(weekTxns);
@@ -487,11 +580,16 @@ app.get('/api/transactions', async (req, res) => {
   try {
     const { enrollments } = readJSON(FILES.accounts) || { enrollments: [] };
     if (req.query.force === 'true') invalidateCache();
-    const { transactions: all, enrollmentErrors, fromCache } = await getTransactions(enrollments);
+    const { transactions: all, enrollmentErrors, fromCache, staleData, lastSuccessAt } = await getTransactions(enrollments);
 
     // Filter to requested date range
-    const transactions = all
-      .filter(t => t.date >= startDate && t.date <= endDate)
+    const tellerTxns = all.filter(t => t.date >= startDate && t.date <= endDate);
+
+    // Merge manual transactions
+    const manualAll = readJSON(FILES.manualTxns) || [];
+    const manualTxns = manualAll.filter(t => t.date >= startDate && t.date <= endDate);
+
+    const transactions = [...tellerTxns, ...manualTxns]
       .sort((a, b) => (a.date < b.date ? 1 : -1));
 
     const accountSummaries = enrollments.flatMap(enr =>
@@ -504,11 +602,14 @@ app.get('/api/transactions', async (req, res) => {
         itemId:          enr.enrollmentId,
       }))
     );
+    if (manualTxns.length > 0) {
+      accountSummaries.push({ institutionName: 'Manual', accountId: 'manual', name: 'Manual Entry', mask: null, type: 'depository', itemId: 'manual' });
+    }
 
-    res.json({ transactions, accounts: accountSummaries, enrollmentErrors });
+    res.json({ transactions, accounts: accountSummaries, enrollmentErrors, staleData: staleData || false, lastSuccessAt: lastSuccessAt || null });
 
-    // Update history snapshot asynchronously (uses cache — free)
-    if (!fromCache) setImmediate(() => runSnapshot().catch(() => {}));
+    // Update history snapshot asynchronously
+    setImmediate(() => runSnapshot().catch(() => {}));
   } catch (e) {
     console.error('transactions error:', e.message);
     res.status(500).json({ error: e.message });
@@ -557,6 +658,62 @@ app.post('/api/budget', (req, res) => {
   res.json({ success: true, weeklyBudget });
 });
 
+// GET /api/overrides
+app.get('/api/overrides', (req, res) => {
+  const data = readJSON(FILES.overrides) || {};
+  res.json({ overrides: data });
+});
+
+// POST /api/overrides/set
+app.post('/api/overrides/set', (req, res) => {
+  const { transactionId, amount, date } = req.body;
+  if (!transactionId || typeof transactionId !== 'string') return res.status(400).json({ error: 'invalid transactionId' });
+  const data = readJSON(FILES.overrides) || {};
+  if (amount === null || amount === undefined) {
+    delete data[transactionId];
+  } else {
+    const parsed = parseFloat(amount);
+    if (!isFinite(parsed)) return res.status(400).json({ error: 'invalid amount' });
+    data[transactionId] = { amount: parsed };
+    if (date && typeof date === 'string') data[transactionId].date = date;
+  }
+  writeJSON(FILES.overrides, data);
+  res.json({ overrides: data });
+});
+
+// POST /api/transactions/add — add a manual transaction
+app.post('/api/transactions/add', (req, res) => {
+  const { name, amount, date } = req.body;
+  if (!name || typeof name !== 'string' || !name.trim()) return res.status(400).json({ error: 'name required' });
+  const parsed = parseFloat(amount);
+  if (!isFinite(parsed) || parsed <= 0) return res.status(400).json({ error: 'amount must be a positive number' });
+  if (!date || typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+  const txn = {
+    transaction_id: `manual_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    account_id: 'manual',
+    name: name.trim(),
+    merchant_name: name.trim(),
+    amount: parsed,
+    date,
+    pending: false,
+    manual: true,
+  };
+  const data = readJSON(FILES.manualTxns) || [];
+  data.push(txn);
+  writeJSON(FILES.manualTxns, data);
+  res.json({ transaction: txn });
+});
+
+// DELETE /api/transactions/:id — delete a manual transaction
+app.delete('/api/transactions/:id', (req, res) => {
+  const { id } = req.params;
+  if (!id.startsWith('manual_')) return res.status(400).json({ error: 'can only delete manual transactions' });
+  const data = readJSON(FILES.manualTxns) || [];
+  const next = data.filter(t => t.transaction_id !== id);
+  writeJSON(FILES.manualTxns, next);
+  res.json({ ok: true });
+});
+
 // GET /api/excluded
 app.get('/api/excluded', (req, res) => {
   const data = readJSON(FILES.excluded) || { excludedIds: [] };
@@ -586,19 +743,29 @@ app.get('/api/history/monthly', (req, res) => {
   res.json({ history: Object.values(history).filter(e => e.totalSpent > 0).sort((a, b) => (a.monthKey < b.monthKey ? 1 : -1)) });
 });
 
-// POST /api/history/update — called by detail screens to keep history totals in sync with exclusions
+// POST /api/history/update — called by detail screens to keep history totals in sync
 app.post('/api/history/update', (req, res) => {
-  const { type, key, totalSpent } = req.body;
+  const { type, key, totalSpent, startDate, endDate, label } = req.body;
+  if (typeof key !== 'string' || key.includes('__')) return res.status(400).json({ error: 'invalid key' });
+  const amount = parseFloat(totalSpent);
+  if (!isFinite(amount) || amount < 0) return res.status(400).json({ error: 'invalid totalSpent' });
+  const { weeklyBudget } = readJSON(FILES.budget) || { weeklyBudget: 250 };
   if (type === 'weekly') {
     const history = readJSON(FILES.weeklyHistory) || {};
+    if (!history[key] && startDate && endDate) {
+      history[key] = { weekKey: key, startDate, endDate, totalSpent: 0, weeklyBudget };
+    }
     if (history[key]) {
-      history[key].totalSpent = parseFloat(parseFloat(totalSpent).toFixed(2));
+      history[key].totalSpent = parseFloat(amount.toFixed(2));
       writeJSON(FILES.weeklyHistory, history);
     }
   } else if (type === 'monthly') {
     const history = readJSON(FILES.monthlyHistory) || {};
+    if (!history[key] && startDate && endDate) {
+      history[key] = { monthKey: key, label: label || key, startDate, endDate, totalSpent: 0, weeklyBudget };
+    }
     if (history[key]) {
-      history[key].totalSpent = parseFloat(parseFloat(totalSpent).toFixed(2));
+      history[key].totalSpent = parseFloat(amount.toFixed(2));
       writeJSON(FILES.monthlyHistory, history);
     }
   }

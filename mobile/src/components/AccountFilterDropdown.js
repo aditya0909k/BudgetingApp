@@ -31,7 +31,7 @@ export default function AccountFilterDropdown({ accounts, selectedAccountIds, on
   }
 
   function toggleAccount(accountId) {
-    const next = new Set(selectedAccountIds);
+    const next = new Set(selectedAccountIds || accounts.map(a => a.accountId));
     if (next.has(accountId)) {
       next.delete(accountId);
     } else {
