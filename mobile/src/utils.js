@@ -62,3 +62,22 @@ function toDateStr(d) {
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
 }
+
+export function formatDateHeader(dateStr) {
+  const today = getTodayStr();
+  if (dateStr === today) return 'Today';
+  const [ty, tm, td] = today.split('-').map(Number);
+  const yesterday = toDateStr(new Date(ty, tm - 1, td - 1));
+  if (dateStr === yesterday) return 'Yesterday';
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const date = new Date(y, m - 1, d);
+  const FULL_DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  return `${FULL_DAYS[date.getDay()]}, ${SHORT_MONTHS[m - 1]} ${d}`;
+}
+
+export function shiftDate(dateStr, days) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const date = new Date(y, m - 1, d);
+  date.setDate(date.getDate() + days);
+  return toDateStr(date);
+}

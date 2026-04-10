@@ -78,7 +78,8 @@ export default function MonthlyScreen() {
           {history.map(entry => {
             const [y, m] = entry.startDate.split('-').map(Number);
             const daysInMonth = new Date(y, m, 0).getDate();
-            const monthBudget = parseFloat((weeklyBudget * daysInMonth / 7).toFixed(2));
+            const budgetBase = entry.weeklyBudget || weeklyBudget;
+            const monthBudget = parseFloat((budgetBase * daysInMonth / 7).toFixed(2));
             return (
               <Pressable
                 key={entry.monthKey}

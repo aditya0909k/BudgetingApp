@@ -1,11 +1,10 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Haptics from 'expo-haptics';
 import { API_BASE_URL } from '../config';
 
 const AppContext = createContext(null);
 
-// Retry a fetch up to `attempts` times with a 1.5s delay between tries.
 async function fetchWithRetry(url, options, attempts = 3) {
   for (let i = 0; i < attempts; i++) {
     try {
@@ -24,10 +23,10 @@ async function fetchWithRetry(url, options, attempts = 3) {
 export function AppProvider({ children }) {
   const [weeklyBudget, setWeeklyBudgetState] = useState(250);
   const [excludedIds, setExcludedIds] = useState(new Set());
+  const [overrides, setOverrides] = useState({});
   const [linkedAccounts, setLinkedAccounts] = useState([]);
   const [theme, setThemeState] = useState({ mode: 'dark', accentColor: '#4ade80' });
 
-  // ─── Load persisted theme on mount ─────────────────────────────────────────
   useEffect(() => {
     (async () => {
       try {
@@ -39,16 +38,14 @@ export function AppProvider({ children }) {
           mode: mode || prev.mode,
           accentColor: accent || prev.accentColor,
         }));
-      } catch (e) {
-        // ignore
-      }
+      } catch (e) {}
     })();
   }, []);
 
-  // ─── Fetch initial data ─────────────────────────────────────────────────────
   useEffect(() => {
     fetchBudget();
     fetchExcluded();
+    fetchOverrides();
     refreshAccounts();
   }, []);
 
@@ -57,9 +54,7 @@ export function AppProvider({ children }) {
       const res = await fetchWithRetry(`${API_BASE_URL}/api/budget`);
       const data = await res.json();
       if (data.weeklyBudget) setWeeklyBudgetState(data.weeklyBudget);
-    } catch (e) {
-      // server not reachable — keep default
-    }
+    } catch (e) {}
   }
 
   async function fetchExcluded() {
@@ -67,9 +62,15 @@ export function AppProvider({ children }) {
       const res = await fetchWithRetry(`${API_BASE_URL}/api/excluded`);
       const data = await res.json();
       if (data.excludedIds) setExcludedIds(new Set(data.excludedIds));
-    } catch (e) {
-      // ignore
-    }
+    } catch (e) {}
+  }
+
+  async function fetchOverrides() {
+    try {
+      const res = await fetchWithRetry(`${API_BASE_URL}/api/overrides`);
+      const data = await res.json();
+      if (data.overrides) setOverrides(data.overrides);
+    } catch (e) {}
   }
 
   const refreshAccounts = useCallback(async () => {
@@ -77,12 +78,8 @@ export function AppProvider({ children }) {
       const res = await fetchWithRetry(`${API_BASE_URL}/api/accounts`);
       const data = await res.json();
       if (data.accounts) setLinkedAccounts(data.accounts);
-    } catch (e) {
-      // ignore
-    }
+    } catch (e) {}
   }, []);
-
-  // ─── Actions ────────────────────────────────────────────────────────────────
 
   function setWeeklyBudget(val) {
     setWeeklyBudgetState(val);
@@ -90,17 +87,12 @@ export function AppProvider({ children }) {
 
   async function toggleExcluded(transactionId) {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    // Optimistic update
     setExcludedIds(prev => {
       const next = new Set(prev);
-      if (next.has(transactionId)) {
-        next.delete(transactionId);
-      } else {
-        next.add(transactionId);
-      }
+      if (next.has(transactionId)) next.delete(transactionId);
+      else next.add(transactionId);
       return next;
     });
-
     try {
       const res = await fetch(`${API_BASE_URL}/api/excluded/toggle`, {
         method: 'POST',
@@ -110,8 +102,28 @@ export function AppProvider({ children }) {
       const data = await res.json();
       if (data.excludedIds) setExcludedIds(new Set(data.excludedIds));
     } catch (e) {
-      // revert on error by re-fetching
       fetchExcluded();
+    }
+  }
+
+  async function setOverride(transactionId, amount, date) {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setOverrides(prev => {
+      const next = { ...prev };
+      if (amount === null) delete next[transactionId];
+      else next[transactionId] = { amount: parseFloat(amount), date };
+      return next;
+    });
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/overrides/set`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ transactionId, amount, date }),
+      });
+      const data = await res.json();
+      if (data.overrides) setOverrides(data.overrides);
+    } catch (e) {
+      fetchOverrides();
     }
   }
 
@@ -131,6 +143,8 @@ export function AppProvider({ children }) {
         setWeeklyBudget,
         excludedIds,
         toggleExcluded,
+        overrides,
+        setOverride,
         linkedAccounts,
         refreshAccounts,
         theme,
