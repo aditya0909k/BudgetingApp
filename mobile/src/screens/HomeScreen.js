@@ -18,6 +18,41 @@ import SkeletonRow from '../components/SkeletonRow';
 const CACHE_KEY = 'home_week_cache';
 const QUEUE_KEY = 'offline_tx_queue';
 
+// Simple recursive-descent expression evaluator: supports +, -, *, /, ()
+function calcEval(expr) {
+  const s = expr.replace(/\s/g, '');
+  let pos = 0;
+  function parseExpr() {
+    let v = parseTerm();
+    while (pos < s.length && (s[pos] === '+' || s[pos] === '-')) {
+      const op = s[pos++];
+      const r = parseTerm();
+      v = op === '+' ? v + r : v - r;
+    }
+    return v;
+  }
+  function parseTerm() {
+    let v = parseFactor();
+    while (pos < s.length && (s[pos] === '*' || s[pos] === '/')) {
+      const op = s[pos++];
+      const r = parseFactor();
+      v = op === '*' ? v * r : v / r;
+    }
+    return v;
+  }
+  function parseFactor() {
+    if (s[pos] === '(') { pos++; const v = parseExpr(); if (s[pos] === ')') pos++; return v; }
+    if (s[pos] === '-') { pos++; return -parseFactor(); }
+    let n = '';
+    while (pos < s.length && (s[pos] >= '0' && s[pos] <= '9' || s[pos] === '.')) n += s[pos++];
+    return parseFloat(n) || 0;
+  }
+  try {
+    const result = parseExpr();
+    return isFinite(result) ? Math.round(result * 100) / 100 : null;
+  } catch { return null; }
+}
+
 async function flushOfflineQueue() {
   try {
     const raw = await AsyncStorage.getItem(QUEUE_KEY);
@@ -57,12 +92,20 @@ export default function HomeScreen() {
   const [lastSuccessAt, setLastSuccessAt] = useState(null);
   const [isOffline, setIsOffline] = useState(false);
 
+  // Gauge popover
+  const [gaugePopover, setGaugePopover] = useState(false);
+
   // Add transaction modal
   const [addVisible, setAddVisible] = useState(false);
   const [addName, setAddName] = useState('');
   const [addAmount, setAddAmount] = useState('');
   const [addDate, setAddDate] = useState(new Date());
   const [addDateOpen, setAddDateOpen] = useState(false);
+  const [addNotes, setAddNotes] = useState('');
+
+  // Calculator
+  const [calcVisible, setCalcVisible] = useState(false);
+  const [calcExpr, setCalcExpr] = useState('');
 
   const { startDate, endDate } = getCurrentWeekRange();
   const onlyManual = accounts.length === 0 || accounts.every(a => a.accountId === 'manual');
@@ -182,6 +225,22 @@ export default function HomeScreen() {
     [filteredTransactions, excludedIds, overrides, startDate, endDate]
   );
 
+  // Category breakdown for gauge popover
+  const categoryBreakdown = useMemo(() => {
+    const groups = {};
+    for (const t of filteredTransactions) {
+      if (excludedIds.has(t.transaction_id) || (overrides[t.transaction_id]?.amount ?? t.amount) <= 0) continue;
+      const key = (t.name || t.merchant_name || 'Other').trim();
+      const amt = overrides[t.transaction_id]?.amount ?? t.amount;
+      groups[key] = (groups[key] || 0) + amt;
+    }
+    const sorted = Object.entries(groups).sort((a, b) => b[1] - a[1]);
+    const top = sorted.slice(0, 4);
+    const otherAmt = sorted.slice(4).reduce((s, [, v]) => s + v, 0);
+    if (otherAmt > 0) top.push(['Other', otherAmt]);
+    return top;
+  }, [filteredTransactions, excludedIds, overrides]);
+
   // Split transactions: today vs older
   const todayStr = getTodayStr();
   const todayTxns = useMemo(
@@ -223,11 +282,59 @@ export default function HomeScreen() {
     return `Synced ${mon} ${day}, ${h12}:${m} ${ampm}`;
   }
 
+  const calcResult = useMemo(() => calcEval(calcExpr), [calcExpr]);
+
+  function openCalc() {
+    Keyboard.dismiss();
+    setCalcExpr(addAmount || '');
+    setCalcVisible(true);
+  }
+
+  const OPS = new Set(['+', '-', '*', '/']);
+  const OP_MAP = { '−': '-', '÷': '/', '( )': '()' };
+
+  function handleCalcInput(key) {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    if (key === '⌫') { setCalcExpr(p => p.slice(0, -1)); return; }
+    const char = OP_MAP[key] ?? key;
+    if (char === '()') {
+      setCalcExpr(p => {
+        const open = (p.match(/\(/g) || []).length;
+        const close = (p.match(/\)/g) || []).length;
+        const unclosed = open - close;
+        const last = p.slice(-1);
+        const insertClose = unclosed > 0 && /[\d.)]/.test(last);
+        return p + (insertClose ? ')' : '(');
+      });
+      return;
+    }
+    if (OPS.has(char)) {
+      setCalcExpr(p => OPS.has(p.slice(-1)) ? p.slice(0, -1) + char : p + char);
+      return;
+    }
+    if (key === '.') {
+      setCalcExpr(p => {
+        const lastNum = p.split(/[+\-*/()]/).pop();
+        return lastNum.includes('.') ? p : p + '.';
+      });
+      return;
+    }
+    setCalcExpr(p => p + char);
+  }
+
+  function applyCalcResult() {
+    const val = calcResult !== null ? calcResult : parseFloat(calcExpr) || 0;
+    setAddAmount(val % 1 === 0 ? String(val) : val.toFixed(2));
+    setCalcVisible(false);
+  }
+
   function openAdd() {
-    setAddName('');
+    setAddName('Food');
     setAddAmount('');
     setAddDate(new Date());
     setAddDateOpen(false);
+    setAddNotes('');
+    setCalcVisible(false);
     setAddVisible(true);
   }
 
@@ -236,7 +343,7 @@ export default function HomeScreen() {
     if (!addName.trim() || !isFinite(amount) || amount <= 0) return;
     const d = addDate;
     const dateStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-    const txPayload = { name: addName.trim(), amount, date: dateStr };
+    const txPayload = { name: addName.trim(), amount, date: dateStr, ...(addNotes.trim() ? { notes: addNotes.trim() } : {}) };
     setAddVisible(false);
     try {
       const res = await fetch(`${API_BASE_URL}/api/transactions/add`, {
@@ -260,6 +367,7 @@ export default function HomeScreen() {
         name: txPayload.name,
         amount: txPayload.amount,
         date: txPayload.date,
+        notes: txPayload.notes,
         account_id: 'manual',
         manual: true,
         offlineQueued: true,
@@ -288,14 +396,17 @@ export default function HomeScreen() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
-      <CustomHeader />
+      <CustomHeader onTransactionAdded={fetchData} />
       <FlatList
         data={[]}
         keyExtractor={() => ''}
         renderItem={null}
+        keyboardShouldPersistTaps="handled"
         ListHeaderComponent={
           <View>
-            <ArcGauge spent={totalSpent} budget={weeklyBudget} accentColor={theme.accentColor} period="week" />
+            <Pressable onLongPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); setGaugePopover(true); }} delayLongPress={400}>
+              <ArcGauge spent={totalSpent} budget={weeklyBudget} accentColor={theme.accentColor} period="week" />
+            </Pressable>
 
             {/* Bank status / Add transaction bar */}
             <View style={{
@@ -365,10 +476,7 @@ export default function HomeScreen() {
                 {/* Today section */}
                 {todayTxns.length > 0 && (
                   <>
-                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.border }}>
-                      <Text style={{ fontSize: 12, fontWeight: '700', color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.8 }}>Today</Text>
-                      {todaySpent > 0 && <Text style={{ fontSize: 13, fontWeight: '600', color: colors.text }}>{formatCurrency(todaySpent)}</Text>}
-                    </View>
+                    <DayHeader label="Today" daySpent={todaySpent} colors={colors} topBorder={false} />
                     {todayTxns.map(t => (
                       <TransactionRow key={t.transaction_id} transaction={t} isExcluded={excludedIds.has(t.transaction_id)} onPress={() => toggleExcluded(t.transaction_id)} onDelete={handleDelete} />
                     ))}
@@ -383,10 +491,7 @@ export default function HomeScreen() {
                   const showTopBorder = idx > 0 || todayTxns.length > 0;
                   return (
                     <React.Fragment key={section.date}>
-                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.border, borderTopWidth: showTopBorder ? 1 : 0, borderTopColor: colors.border }}>
-                        <Text style={{ fontSize: 12, fontWeight: '700', color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.8 }}>{formatDateHeader(section.date)}</Text>
-                        {daySpent > 0 && <Text style={{ fontSize: 13, fontWeight: '600', color: colors.text }}>{formatCurrency(daySpent)}</Text>}
-                      </View>
+                      <DayHeader label={formatDateHeader(section.date)} daySpent={daySpent} colors={colors} topBorder={showTopBorder} />
                       {section.transactions.map(t => (
                         <TransactionRow key={t.transaction_id} transaction={t} isExcluded={excludedIds.has(t.transaction_id)} onPress={() => toggleExcluded(t.transaction_id)} onDelete={handleDelete} />
                       ))}
@@ -414,10 +519,10 @@ export default function HomeScreen() {
             {/* Footer */}
             {!loading && filteredTransactions.length > 0 && (
               <View style={{ paddingHorizontal: 16, paddingVertical: 14, flexDirection: 'row', justifyContent: 'space-between' }}>
-                <Text style={{ fontSize: 12, color: colors.warning }}>
+                <Text style={{ fontSize: 12, color: colors.textMuted }}>
                   {filteredTransactions.filter(t => !excludedIds.has(t.transaction_id) && t.amount > 0).length} transactions
                 </Text>
-                <Text style={{ fontSize: 12, color: colors.warning }}>{formatCurrency(totalSpent)}</Text>
+                <Text style={{ fontSize: 12, color: colors.textMuted }}>{formatCurrency(totalSpent)}</Text>
               </View>
             )}
           </View>
@@ -451,27 +556,86 @@ export default function HomeScreen() {
                   style={{ backgroundColor: colors.background, color: colors.text, borderRadius: 8, borderWidth: 1, borderColor: colors.border, padding: 12, fontSize: 15, marginBottom: 8 }}
                 />
                 <View style={{ flexDirection: 'row', gap: 6, marginBottom: 14 }}>
-                  {['Food', 'Grocery'].map(label => (
+                  {['Food', 'Grocery', 'Misc'].map(label => (
                     <Pressable
                       key={label}
-                      onPress={() => setAddName(label)}
-                      style={{ paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6, borderWidth: 1, borderColor: addName === label ? colors.accent : colors.border, backgroundColor: addName === label ? colors.accent + '22' : colors.background }}
+                      onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setAddName(label); }}
+                      style={({ pressed }) => ({ paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6, borderWidth: 1, borderColor: addName === label ? colors.accent : colors.border, backgroundColor: pressed ? 'rgba(255,255,255,0.12)' : addName === label ? colors.accent + '22' : colors.background })}
                     >
                       <Text style={{ fontSize: 12, color: addName === label ? colors.accent : colors.textMuted, fontWeight: '500' }}>{label}</Text>
                     </Pressable>
                   ))}
+                  <Pressable
+                    onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setAddName(''); }}
+                    style={({ pressed }) => ({ paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6, borderWidth: 1, borderColor: colors.border, backgroundColor: pressed ? 'rgba(255,255,255,0.12)' : colors.background })}
+                  >
+                    <Text style={{ fontSize: 12, color: colors.textMuted, fontWeight: '500' }}>Clear</Text>
+                  </Pressable>
                 </View>
 
                 <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: 6 }}>Amount</Text>
-                <TextInput
-                  value={addAmount}
-                  onChangeText={setAddAmount}
-                  keyboardType="decimal-pad"
-                  placeholder="0.00"
-                  placeholderTextColor={colors.textMuted}
-                  style={{ backgroundColor: colors.background, color: colors.text, borderRadius: 8, borderWidth: 1, borderColor: colors.border, padding: 12, fontSize: 18, fontWeight: '600', marginBottom: 14, textAlign: 'center' }}
-                  selectTextOnFocus
-                />
+                <View style={{ flexDirection: 'row', gap: 8, marginBottom: calcVisible ? 10 : 14 }}>
+                  <TextInput
+                    value={addAmount}
+                    onChangeText={setAddAmount}
+                    keyboardType="decimal-pad"
+                    placeholder="0.00"
+                    placeholderTextColor={colors.textMuted}
+                    style={{ flex: 1, backgroundColor: colors.background, color: colors.text, borderRadius: 8, borderWidth: 1, borderColor: colors.border, padding: 12, fontSize: 18, fontWeight: '600', textAlign: 'center' }}
+                    selectTextOnFocus
+                  />
+                  <Pressable
+                    onPress={openCalc}
+                    style={({ pressed }) => ({ width: 48, borderRadius: 8, borderWidth: 1, borderColor: calcVisible ? colors.accent : colors.border, backgroundColor: pressed ? 'rgba(255,255,255,0.12)' : colors.background, alignItems: 'center', justifyContent: 'center' })}
+                  >
+                    <Text style={{ fontSize: 20, color: colors.textMuted }}>±</Text>
+                  </Pressable>
+                </View>
+
+                {/* Calculator panel */}
+                {calcVisible && (
+                  <View style={{ backgroundColor: colors.background, borderRadius: 10, borderWidth: 1, borderColor: colors.border, padding: 10, marginBottom: 14 }}>
+                    {/* Display */}
+                    <Text numberOfLines={1} style={{ color: colors.text, fontSize: 15, fontWeight: '600', textAlign: 'right', marginBottom: 8, minHeight: 22 }}>
+                      {(calcExpr || '0').replace(/\*/g, '×').replace(/\//g, '÷')}
+                      {calcResult !== null && calcExpr ? ` = ${calcResult}` : ''}
+                    </Text>
+
+                    {/* 4×4 grid: nums + ops + parens + backspace */}
+                    {[
+                      ['7','8','9','⌫'],
+                      ['4','5','6','+'],
+                      ['1','2','3','−'],
+                      ['( )','0','.','÷'],
+                    ].map(row => (
+                      <View key={row.join('')} style={{ flexDirection: 'row', gap: 6, marginBottom: 6 }}>
+                        {row.map(key => {
+                          const isOp = ['+','−','÷'].includes(key);
+                          const isBack = key === '⌫';
+                          const isParen = key === '( )';
+                          return (
+                            <Pressable key={key} onPress={() => handleCalcInput(key)}
+                              style={({ pressed }) => ({ flex: 1, paddingVertical: 13, borderRadius: 7, borderWidth: 1, alignItems: 'center', backgroundColor: pressed ? 'rgba(255,255,255,0.15)' : colors.card, borderColor: pressed ? 'rgba(255,255,255,0.3)' : colors.border })}>
+                              <Text style={{ color: isOp ? colors.accent : isBack ? colors.textMuted : isParen ? colors.accent : colors.text, fontSize: isOp ? 20 : 16, fontWeight: isOp || isBack ? '600' : '500' }}>{key}</Text>
+                            </Pressable>
+                          );
+                        })}
+                      </View>
+                    ))}
+
+                    {/* OK / Cancel */}
+                    <View style={{ flexDirection: 'row', gap: 8 }}>
+                      <Pressable onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setCalcVisible(false); }}
+                        style={({ pressed }) => ({ flex: 1, paddingVertical: 11, borderRadius: 8, borderWidth: 1, borderColor: colors.border, alignItems: 'center', backgroundColor: pressed ? 'rgba(255,255,255,0.12)' : 'transparent' })}>
+                        <Text style={{ color: colors.textMuted, fontWeight: '600' }}>Cancel</Text>
+                      </Pressable>
+                      <Pressable onPress={applyCalcResult}
+                        style={{ flex: 2, paddingVertical: 11, borderRadius: 8, backgroundColor: colors.accent, alignItems: 'center' }}>
+                        <Text style={{ color: '#000', fontWeight: '700' }}>OK</Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                )}
 
                 <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: 6 }}>Date</Text>
                 {addDateOpen && (
@@ -486,29 +650,42 @@ export default function HomeScreen() {
                 )}
                 <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 20, gap: 6 }}>
                   <Pressable
-                    onPress={() => { const d = new Date(addDate); d.setDate(d.getDate() - 1); setAddDate(d); }}
-                    style={{ paddingHorizontal: 12, paddingVertical: 12, borderRadius: 8, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.background }}
+                    onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); const d = new Date(addDate); d.setDate(d.getDate() - 1); setAddDate(d); }}
+                    style={({ pressed }) => ({ paddingHorizontal: 12, paddingVertical: 12, borderRadius: 8, borderWidth: 1, borderColor: colors.border, backgroundColor: pressed ? 'rgba(255,255,255,0.12)' : colors.background })}
                   >
                     <Text style={{ color: colors.text, fontSize: 16 }}>‹</Text>
                   </Pressable>
                   <Pressable
-                    onPress={() => { Keyboard.dismiss(); setAddDateOpen(prev => !prev); }}
-                    style={{ flex: 1, backgroundColor: colors.background, borderRadius: 8, borderWidth: 1, borderColor: addDateOpen ? colors.accent : colors.border, padding: 12, alignItems: 'center' }}
+                    onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); Keyboard.dismiss(); setAddDateOpen(prev => !prev); }}
+                    style={({ pressed }) => ({ flex: 1, borderRadius: 8, borderWidth: 1, borderColor: addDateOpen ? colors.accent : colors.border, padding: 12, alignItems: 'center', backgroundColor: pressed ? 'rgba(255,255,255,0.12)' : colors.background })}
                   >
                     <Text style={{ color: colors.accent, fontSize: 15, fontWeight: '500' }}>
                       {addDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                     </Text>
                   </Pressable>
                   <Pressable
-                    onPress={() => { const d = new Date(addDate); d.setDate(d.getDate() + 1); if (d <= new Date()) setAddDate(d); }}
-                    style={{ paddingHorizontal: 12, paddingVertical: 12, borderRadius: 8, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.background }}
+                    onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); const d = new Date(addDate); d.setDate(d.getDate() + 1); if (d <= new Date()) setAddDate(d); }}
+                    style={({ pressed }) => ({ paddingHorizontal: 12, paddingVertical: 12, borderRadius: 8, borderWidth: 1, borderColor: colors.border, backgroundColor: pressed ? 'rgba(255,255,255,0.12)' : colors.background })}
                   >
                     <Text style={{ color: colors.text, fontSize: 16 }}>›</Text>
                   </Pressable>
                 </View>
 
+                {!addDateOpen && (
+                  <>
+                    <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: 6 }}>Notes <Text style={{ color: colors.textMuted, fontWeight: '400' }}>(optional)</Text></Text>
+                    <TextInput
+                      value={addNotes}
+                      onChangeText={setAddNotes}
+                      placeholder="e.g. dinner with John"
+                      placeholderTextColor={colors.textMuted}
+                      style={{ backgroundColor: colors.background, color: colors.text, borderRadius: 8, borderWidth: 1, borderColor: colors.border, padding: 12, fontSize: 14, marginBottom: 20 }}
+                    />
+                  </>
+                )}
+
                 <View style={{ flexDirection: 'row', gap: 8 }}>
-                  <Pressable onPress={() => setAddVisible(false)} style={{ flex: 1, padding: 12, borderRadius: 8, borderWidth: 1, borderColor: colors.border, alignItems: 'center' }}>
+                  <Pressable onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setAddVisible(false); }} style={({ pressed }) => ({ flex: 1, padding: 12, borderRadius: 8, borderWidth: 1, borderColor: colors.border, alignItems: 'center', backgroundColor: pressed ? 'rgba(255,255,255,0.12)' : 'transparent' })}>
                     <Text style={{ color: colors.textMuted, fontWeight: '600' }}>Cancel</Text>
                   </Pressable>
                   <Pressable onPress={submitAdd} style={{ flex: 1, padding: 12, borderRadius: 8, backgroundColor: colors.accent, alignItems: 'center', opacity: (!addName.trim() || !addAmount) ? 0.4 : 1 }}>
@@ -517,10 +694,60 @@ export default function HomeScreen() {
                 </View>
               </View>
               </TouchableWithoutFeedback>
+
             </View>
           </TouchableWithoutFeedback>
         </KeyboardAvoidingView>
       </Modal>
+
+      {/* Gauge breakdown popover */}
+      <Modal transparent visible={gaugePopover} animationType="fade" onRequestClose={() => setGaugePopover(false)}>
+        <TouchableWithoutFeedback onPress={() => setGaugePopover(false)}>
+          <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center' }}>
+            <TouchableWithoutFeedback>
+              <View style={{ width: 280, backgroundColor: colors.card, borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 20 }}>
+                <Text style={{ color: colors.text, fontSize: 15, fontWeight: '700', marginBottom: 14 }}>This Week</Text>
+                {categoryBreakdown.length === 0 ? (
+                  <Text style={{ color: colors.textMuted, fontSize: 13 }}>No transactions yet</Text>
+                ) : (
+                  categoryBreakdown.map(([cat, amt]) => {
+                    const pct = totalSpent > 0 ? amt / totalSpent : 0;
+                    return (
+                      <View key={cat} style={{ marginBottom: 10 }}>
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 }}>
+                          <Text style={{ color: colors.text, fontSize: 13 }}>{cat}</Text>
+                          <View style={{ flexDirection: 'row', gap: 8 }}>
+                            <Text style={{ color: colors.textMuted, fontSize: 13 }}>{Math.round(pct * 100)}%</Text>
+                            <Text style={{ color: colors.text, fontSize: 13, fontWeight: '600' }}>{formatCurrency(amt)}</Text>
+                          </View>
+                        </View>
+                        <View style={{ height: 3, borderRadius: 2, backgroundColor: colors.gaugeTrack }}>
+                          <View style={{ width: `${Math.round(pct * 100)}%`, height: '100%', borderRadius: 2, backgroundColor: colors.accent }} />
+                        </View>
+                      </View>
+                    );
+                  })
+                )}
+                <View style={{ borderTopWidth: 1, borderTopColor: colors.border, marginTop: 6, paddingTop: 10, flexDirection: 'row', justifyContent: 'space-between' }}>
+                  <Text style={{ color: colors.textMuted, fontSize: 13 }}>Total</Text>
+                  <Text style={{ color: colors.text, fontSize: 13, fontWeight: '700' }}>{formatCurrency(totalSpent)} <Text style={{ color: colors.textMuted, fontWeight: '400' }}>of {formatCurrency(weeklyBudget)}</Text></Text>
+                </View>
+              </View>
+            </TouchableWithoutFeedback>
+          </View>
+        </TouchableWithoutFeedback>
+      </Modal>
+    </View>
+  );
+}
+
+function DayHeader({ label, daySpent, colors, topBorder }) {
+  return (
+    <View style={{ borderBottomWidth: 1, borderBottomColor: colors.border, borderTopWidth: topBorder ? 1 : 0, borderTopColor: colors.border }}>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingTop: 10, paddingBottom: 8 }}>
+        <Text style={{ fontSize: 12, fontWeight: '700', color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.8 }}>{label}</Text>
+        {daySpent > 0 && <Text style={{ fontSize: 13, fontWeight: '600', color: colors.text }}>{formatCurrency(daySpent)}</Text>}
+      </View>
     </View>
   );
 }

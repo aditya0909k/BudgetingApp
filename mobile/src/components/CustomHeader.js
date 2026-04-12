@@ -4,14 +4,19 @@ import {
   Text,
   Pressable,
   Modal,
+  TextInput,
   TouchableOpacity,
   TouchableWithoutFeedback,
+  KeyboardAvoidingView,
+  Platform,
   StyleSheet,
 } from 'react-native';
+import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { useAppContext } from '../context/AppContext';
 import { getTheme } from '../theme';
+import { API_BASE_URL } from '../config';
 
 const NAV_ITEMS = [
   { label: 'Home', screen: 'Home' },
@@ -23,12 +28,14 @@ const SCREEN_LABELS = {
   Home: 'Home',
   Weekly: 'Weekly Spending',
   Monthly: 'Monthly Spending',
-  WeekDetail: null, // label passed via prop
+  WeekDetail: null,
   MonthDetail: null,
   Settings: 'Settings',
 };
 
-export default function CustomHeader({ title }) {
+const TIP_PRESETS = [10, 15, 20, 25];
+
+export default function CustomHeader({ title, onTransactionAdded }) {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
   const route = useRoute();
@@ -38,6 +45,34 @@ export default function CustomHeader({ title }) {
   const [dropdownVisible, setDropdownVisible] = useState(false);
   const [dropdownPos, setDropdownPos] = useState({ top: 0, left: 0, width: 0 });
   const centerRef = useRef(null);
+
+  // Tip calculator state
+  const [tipVisible, setTipVisible] = useState(false);
+  const [bill, setBill] = useState('');
+  const [selectedTip, setSelectedTip] = useState(18);
+  const [customTip, setCustomTip] = useState('');
+  const [split, setSplit] = useState(1);
+
+  const tipPct = customTip !== '' ? (parseFloat(customTip) || 0) : selectedTip;
+  const billNum = parseFloat(bill) || 0;
+  const tipAmt = Math.round(billNum * tipPct) / 100;
+  const total = billNum + tipAmt;
+  const perPerson = split > 1 ? total / split : null;
+
+  function openTip() {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setBill('');
+    setSelectedTip(18);
+    setCustomTip('');
+    setSplit(1);
+    setTipVisible(true);
+  }
+
+  function pickPreset(pct) {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setSelectedTip(pct);
+    setCustomTip('');
+  }
 
   const screenLabel = title || SCREEN_LABELS[route.name] || route.name;
 
@@ -53,27 +88,37 @@ export default function CustomHeader({ title }) {
     navigation.navigate(screen);
   }
 
-  return (
-    <View
-      style={[
-        styles.container,
-        { paddingTop: insets.top, backgroundColor: colors.card, borderBottomColor: colors.border },
-      ]}
-    >
-      <View style={styles.inner}>
-        {/* Left spacer */}
-        <View style={styles.side} />
+  const fmt = (n) => `$${n.toFixed(2)}`;
 
-        {/* Center — tappable dropdown on all screens, chevron hidden on Home */}
-        <Pressable
-          ref={centerRef}
-          onPress={openDropdown}
-          style={styles.center}
-          android_ripple={{ color: colors.border }}
-        >
-          <Text style={[styles.title, { color: colors.text }]} numberOfLines={1}>
-            {screenLabel}
-          </Text>
+  async function addTipTransaction() {
+    if (total <= 0) return;
+    const amount = Math.round((perPerson ?? total) * 100) / 100;
+    const today = new Date();
+    const dateStr = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
+    setTipVisible(false);
+    try {
+      await fetch(`${API_BASE_URL}/api/transactions/add`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Food', amount, date: dateStr }),
+      });
+      onTransactionAdded?.();
+    } catch {}
+  }
+
+  return (
+    <View style={[styles.container, { paddingTop: insets.top, backgroundColor: colors.card, borderBottomColor: colors.border }]}>
+      <View style={styles.inner}>
+        {/* Left — tip calculator */}
+        <View style={[styles.side, { alignItems: 'flex-start' }]}>
+          <Pressable onPress={openTip} style={styles.gearBtn}>
+            <Text style={[styles.gear, { color: colors.accent }]}>%</Text>
+          </Pressable>
+        </View>
+
+        {/* Center — tappable dropdown */}
+        <Pressable ref={centerRef} onPress={openDropdown} style={styles.center} android_ripple={{ color: colors.border }}>
+          <Text style={[styles.title, { color: colors.text }]} numberOfLines={1}>{screenLabel}</Text>
           {(route.name === 'WeekDetail' || route.name === 'MonthDetail') && (
             <Text style={[styles.chevron, { color: colors.textMuted }]}> ˅</Text>
           )}
@@ -88,46 +133,17 @@ export default function CustomHeader({ title }) {
       </View>
 
       {/* Navigation Dropdown Modal */}
-      <Modal
-        transparent
-        visible={dropdownVisible}
-        animationType="fade"
-        onRequestClose={() => setDropdownVisible(false)}
-      >
+      <Modal transparent visible={dropdownVisible} animationType="fade" onRequestClose={() => setDropdownVisible(false)}>
         <TouchableWithoutFeedback onPress={() => setDropdownVisible(false)}>
           <View style={StyleSheet.absoluteFill}>
             <TouchableWithoutFeedback>
-              <View
-                style={[
-                  styles.dropdown,
-                  {
-                    top: dropdownPos.top,
-                    left: dropdownPos.left,
-                    minWidth: dropdownPos.width,
-                    backgroundColor: colors.card,
-                    borderColor: colors.border,
-                  },
-                ]}
-              >
+              <View style={[styles.dropdown, { top: dropdownPos.top, left: dropdownPos.left, minWidth: dropdownPos.width, backgroundColor: colors.card, borderColor: colors.border }]}>
                 {NAV_ITEMS.map(item => {
                   const isActive = route.name === item.screen;
                   return (
-                    <TouchableOpacity
-                      key={item.screen}
-                      onPress={() => navigateTo(item.screen)}
-                      style={[
-                        styles.dropdownItem,
-                        isActive && { backgroundColor: colors.accent + '22' },
-                      ]}
-                    >
-                      <Text
-                        style={[
-                          styles.dropdownText,
-                          { color: isActive ? colors.accent : colors.text },
-                        ]}
-                      >
-                        {item.label}
-                      </Text>
+                    <TouchableOpacity key={item.screen} onPress={() => navigateTo(item.screen)}
+                      style={[styles.dropdownItem, isActive && { backgroundColor: colors.accent + '22' }]}>
+                      <Text style={[styles.dropdownText, { color: isActive ? colors.accent : colors.text }]}>{item.label}</Text>
                     </TouchableOpacity>
                   );
                 })}
@@ -136,62 +152,125 @@ export default function CustomHeader({ title }) {
           </View>
         </TouchableWithoutFeedback>
       </Modal>
+
+      {/* Tip Calculator Modal */}
+      <Modal transparent visible={tipVisible} animationType="fade" onRequestClose={() => setTipVisible(false)}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
+          <TouchableWithoutFeedback onPress={() => setTipVisible(false)}>
+            <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center' }}>
+              <TouchableWithoutFeedback>
+                <View style={{ width: 300, backgroundColor: colors.card, borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 20 }}>
+                  <Text style={{ color: colors.text, fontSize: 16, fontWeight: '700', marginBottom: 16 }}>Tip Calculator</Text>
+
+                  {/* Bill input */}
+                  <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: 6 }}>Bill Amount</Text>
+                  <TextInput
+                    value={bill}
+                    onChangeText={setBill}
+                    keyboardType="decimal-pad"
+                    placeholder="0.00"
+                    placeholderTextColor={colors.textMuted}
+                    style={{ backgroundColor: colors.background, color: colors.text, borderRadius: 8, borderWidth: 1, borderColor: colors.border, padding: 12, fontSize: 22, fontWeight: '700', textAlign: 'center', marginBottom: 16 }}
+                    selectTextOnFocus
+                  />
+
+                  {/* Tip presets */}
+                  <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: 8 }}>Tip %</Text>
+                  <View style={{ flexDirection: 'row', gap: 6, marginBottom: 10 }}>
+                    {TIP_PRESETS.map(pct => {
+                      const active = customTip === '' && selectedTip === pct;
+                      return (
+                        <Pressable key={pct} onPress={() => pickPreset(pct)}
+                          style={({ pressed }) => ({ flex: 1, paddingVertical: 9, borderRadius: 8, borderWidth: 1, alignItems: 'center', borderColor: active ? colors.accent : colors.border, backgroundColor: pressed ? 'rgba(255,255,255,0.12)' : active ? colors.accent + '22' : colors.background })}>
+                          <Text style={{ color: active ? colors.accent : colors.textMuted, fontWeight: '600', fontSize: 13 }}>{pct}%</Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+
+                  {/* Custom tip */}
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 18 }}>
+                    <Text style={{ color: colors.textMuted, fontSize: 13 }}>Custom</Text>
+                    <TextInput
+                      value={customTip}
+                      onChangeText={v => { setCustomTip(v); }}
+                      keyboardType="decimal-pad"
+                      placeholder="e.g. 18"
+                      placeholderTextColor={colors.textMuted}
+                      style={{ flex: 1, backgroundColor: colors.background, color: colors.text, borderRadius: 8, borderWidth: 1, borderColor: customTip !== '' ? colors.accent : colors.border, padding: 9, fontSize: 14, textAlign: 'center' }}
+                    />
+                    <Text style={{ color: colors.textMuted, fontSize: 13 }}>%</Text>
+                  </View>
+
+                  {/* Results */}
+                  <View style={{ backgroundColor: colors.background, borderRadius: 10, borderWidth: 1, borderColor: colors.border, padding: 14, marginBottom: 16 }}>
+                    <Row label="Tip" value={billNum > 0 ? fmt(tipAmt) : '—'} colors={colors} />
+                    <Row label="Total" value={billNum > 0 ? fmt(total) : '—'} colors={colors} bold />
+                    {perPerson && billNum > 0 && (
+                      <Row label={`Per person (÷${split})`} value={fmt(perPerson)} colors={colors} accent />
+                    )}
+                  </View>
+
+                  {/* Split */}
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
+                    <Text style={{ color: colors.textMuted, fontSize: 13 }}>Split between</Text>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                      <Pressable onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setSplit(s => Math.max(1, s - 1)); }}
+                        style={({ pressed }) => ({ width: 30, height: 30, borderRadius: 15, borderWidth: 1, borderColor: colors.border, backgroundColor: pressed ? 'rgba(255,255,255,0.12)' : colors.background, alignItems: 'center', justifyContent: 'center' })}>
+                        <Text style={{ color: colors.text, fontSize: 18, lineHeight: 22 }}>−</Text>
+                      </Pressable>
+                      <Text style={{ color: colors.text, fontWeight: '700', fontSize: 16, minWidth: 20, textAlign: 'center' }}>{split}</Text>
+                      <Pressable onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setSplit(s => Math.min(20, s + 1)); }}
+                        style={({ pressed }) => ({ width: 30, height: 30, borderRadius: 15, borderWidth: 1, borderColor: colors.border, backgroundColor: pressed ? 'rgba(255,255,255,0.12)' : colors.background, alignItems: 'center', justifyContent: 'center' })}>
+                        <Text style={{ color: colors.text, fontSize: 18, lineHeight: 22 }}>+</Text>
+                      </Pressable>
+                    </View>
+                  </View>
+
+                  <View style={{ flexDirection: 'row', gap: 8 }}>
+                    <Pressable onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setTipVisible(false); }}
+                      style={({ pressed }) => ({ flex: 1, paddingVertical: 12, borderRadius: 8, borderWidth: 1, borderColor: colors.border, alignItems: 'center', backgroundColor: pressed ? 'rgba(255,255,255,0.12)' : 'transparent' })}>
+                      <Text style={{ color: colors.textMuted, fontWeight: '600' }}>Done</Text>
+                    </Pressable>
+                    <Pressable onPress={addTipTransaction}
+                      style={{ flex: 2, paddingVertical: 12, borderRadius: 8, backgroundColor: total > 0 ? colors.accent : colors.border, alignItems: 'center', opacity: total > 0 ? 1 : 0.4 }}>
+                      <Text style={{ color: '#000', fontWeight: '700' }}>Add Transaction</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              </TouchableWithoutFeedback>
+            </View>
+          </TouchableWithoutFeedback>
+        </KeyboardAvoidingView>
+      </Modal>
+    </View>
+  );
+}
+
+
+function Row({ label, value, colors, bold, accent }) {
+  return (
+    <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
+      <Text style={{ color: colors.textMuted, fontSize: 13 }}>{label}</Text>
+      <Text style={{ color: accent ? colors.accent : colors.text, fontSize: 13, fontWeight: bold || accent ? '700' : '500' }}>{value}</Text>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    borderBottomWidth: 1,
-  },
-  inner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    height: 52,
-    paddingHorizontal: 12,
-  },
-  side: {
-    width: 44,
-    alignItems: 'flex-end',
-  },
-  center: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  title: {
-    fontSize: 17,
-    fontWeight: '600',
-  },
-  chevron: {
-    fontSize: 14,
-    marginTop: 2,
-  },
-  gearBtn: {
-    padding: 4,
-  },
-  gear: {
-    fontSize: 22,
-  },
+  container: { borderBottomWidth: 1 },
+  inner: { flexDirection: 'row', alignItems: 'center', height: 52, paddingHorizontal: 12 },
+  side: { width: 44, alignItems: 'flex-end' },
+  center: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
+  title: { fontSize: 17, fontWeight: '600' },
+  chevron: { fontSize: 14, marginTop: 2 },
+  gearBtn: { padding: 4 },
+  gear: { fontSize: 22 },
   dropdown: {
-    position: 'absolute',
-    borderWidth: 1,
-    borderRadius: 10,
-    overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 10,
-    zIndex: 100,
+    position: 'absolute', borderWidth: 1, borderRadius: 10, overflow: 'hidden',
+    shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 8, shadowOffset: { width: 0, height: 4 },
+    elevation: 10, zIndex: 100,
   },
-  dropdownItem: {
-    paddingVertical: 14,
-    paddingHorizontal: 20,
-  },
-  dropdownText: {
-    fontSize: 15,
-    fontWeight: '500',
-  },
+  dropdownItem: { paddingVertical: 14, paddingHorizontal: 20 },
+  dropdownText: { fontSize: 15, fontWeight: '500' },
 });
