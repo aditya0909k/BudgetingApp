@@ -13,8 +13,9 @@ import AccountFilterDropdown from '../components/AccountFilterDropdown';
 
 export default function WeekDetailScreen() {
   const route = useRoute();
-  const { startDate, endDate, label, weekKey } = route.params;
-  const { weeklyBudget, excludedIds, toggleExcluded, overrides, theme } = useAppContext();
+  const { startDate, endDate, label, weekKey, weeklyBudget: histBudget } = route.params;
+  const { weeklyBudget: currentBudget, excludedIds, toggleExcluded, overrides, theme } = useAppContext();
+  const weeklyBudget = histBudget ?? currentBudget;
   const colors = getTheme(theme.mode, theme.accentColor);
 
   const [transactions, setTransactions] = useState([]);

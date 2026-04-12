@@ -360,6 +360,29 @@ function monthLabel(k) {
   return `${MONTH_NAMES[parseInt(month, 10) - 1]} ${year}`;
 }
 
+// Compute a pro-rated monthly budget from per-week budgets stored in weekly history.
+// For each Sun–Sat week that overlaps the month, contributes weekBudget * overlapDays/7.
+function blendedMonthlyBudget(monthStart, monthEnd, weeklyHistory, fallbackBudget) {
+  const msDate = new Date(monthStart + 'T00:00:00');
+  const meDate = new Date(monthEnd   + 'T00:00:00');
+  // Rewind to the Sunday that starts the first overlapping week
+  const ws = new Date(msDate);
+  ws.setDate(ws.getDate() - ws.getDay());
+  let total = 0;
+  while (ws <= meDate) {
+    const we = new Date(ws);
+    we.setDate(we.getDate() + 6);
+    const overlapStart = ws < msDate ? msDate : new Date(ws);
+    const overlapEnd   = we > meDate  ? meDate  : new Date(we);
+    const days = Math.round((overlapEnd - overlapStart) / 86400000) + 1;
+    const weekKey = getWeekKey(toDateStr(ws));
+    const budget = weeklyHistory[weekKey]?.weeklyBudget ?? fallbackBudget;
+    total += budget * days / 7;
+    ws.setDate(ws.getDate() + 7);
+  }
+  return parseFloat(total.toFixed(2));
+}
+
 // ─── Snapshotting ─────────────────────────────────────────────────────────────
 // Uses the cache — no extra Teller calls.
 
@@ -406,7 +429,10 @@ async function runSnapshot() {
     if (monthSpent > 0) {
       const monthKey = getMonthKey(monthRange.startDate);
       const history = readJSON(FILES.monthlyHistory) || {};
-      history[monthKey] = { monthKey, label: monthLabel(monthKey), startDate: monthRange.startDate, endDate: monthRange.endDate, totalSpent: parseFloat(monthSpent.toFixed(2)), weeklyBudget };
+      // Read weekly history AFTER writing current week so this week's budget is included
+      const weekHistory = readJSON(FILES.weeklyHistory) || {};
+      const monthBudget = blendedMonthlyBudget(monthRange.startDate, monthRange.endDate, weekHistory, weeklyBudget);
+      history[monthKey] = { monthKey, label: monthLabel(monthKey), startDate: monthRange.startDate, endDate: monthRange.endDate, totalSpent: parseFloat(monthSpent.toFixed(2)), monthlyBudget: monthBudget };
       writeJSON(FILES.monthlyHistory, history);
     }
 
@@ -768,10 +794,14 @@ app.post('/api/history/update', (req, res) => {
   } else if (type === 'monthly') {
     const history = readJSON(FILES.monthlyHistory) || {};
     if (!history[key] && startDate && endDate) {
-      history[key] = { monthKey: key, label: label || key, startDate, endDate, totalSpent: 0, weeklyBudget };
+      history[key] = { monthKey: key, label: label || key, startDate, endDate, totalSpent: 0, monthlyBudget: 0 };
     }
     if (history[key]) {
+      const weekHistory = readJSON(FILES.weeklyHistory) || {};
+      const s = startDate || history[key].startDate;
+      const e = endDate   || history[key].endDate;
       history[key].totalSpent = parseFloat(amount.toFixed(2));
+      if (s && e) history[key].monthlyBudget = blendedMonthlyBudget(s, e, weekHistory, weeklyBudget);
       writeJSON(FILES.monthlyHistory, history);
     }
   }
