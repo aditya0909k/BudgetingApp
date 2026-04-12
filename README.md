@@ -111,24 +111,26 @@ npx expo prebuild --platform ios --clean
 Run these commands in Terminal:
 
 ```bash
-# Step 1: Archive (takes ~5-10 minutes)
-cd ~/Documents/BudgetingApp/mobile/ios
-rm -rf ~/Desktop/BudgetingApp.xcarchive ~/Desktop/BudgetingApp.ipa
-xcodebuild -workspace BudgetingApp.xcworkspace \
+# Step 1: Clean old build artifacts (important — stale archives cause silent failures)
+rm -rf /tmp/BudgetingApp.xcarchive /tmp/IPAPayload /tmp/BudgetingApp.ipa
+
+# Step 2: Archive (takes ~5-10 minutes)
+cd ~/Documents/BudgetingApp/mobile
+xcodebuild -workspace ios/BudgetingApp.xcworkspace \
   -scheme BudgetingApp \
   -configuration Release \
-  -archivePath ~/Desktop/BudgetingApp.xcarchive \
-  archive \
-  CODE_SIGNING_ALLOWED=NO 2>&1 | tail -5
+  -archivePath /tmp/BudgetingApp.xcarchive \
+  CODE_SIGNING_ALLOWED=NO archive 2>&1 | tail -5
 ```
 
 You should see `** ARCHIVE SUCCEEDED **`. Then:
 
 ```bash
-# Step 2: Package as IPA
-rm -rf /tmp/Payload && mkdir /tmp/Payload
-cp -r ~/Desktop/BudgetingApp.xcarchive/Products/Applications/BudgetingApp.app /tmp/Payload/
-cd /tmp && zip -ry ~/Desktop/BudgetingApp.ipa Payload
+# Step 3: Package as IPA
+mkdir -p /tmp/IPAPayload/Payload
+cp -R /tmp/BudgetingApp.xcarchive/Products/Applications/BudgetingApp.app /tmp/IPAPayload/Payload/
+cd /tmp/IPAPayload && zip -r /tmp/BudgetingApp.ipa Payload
+cp /tmp/BudgetingApp.ipa ~/Desktop/BudgetingApp.ipa
 ```
 
 `BudgetingApp.ipa` appears on your Desktop.
@@ -188,7 +190,7 @@ fly deploy
 ```
 
 ### Mobile JS changes (most changes — no new native packages)
-Just rebuild the IPA and re-sideload. No need to re-run `npx expo prebuild`.
+Just rebuild the IPA and re-sideload. No need to re-run `npx expo prebuild`. Always delete `/tmp/BudgetingApp.xcarchive` first so you don't get a stale build.
 
 ### Mobile changes that add a new native package
 ```

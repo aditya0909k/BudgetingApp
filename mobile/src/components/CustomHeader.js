@@ -18,6 +18,35 @@ import { useAppContext } from '../context/AppContext';
 import { getTheme } from '../theme';
 import { API_BASE_URL } from '../config';
 
+function calcEval(expr) {
+  const s = expr.replace(/\s/g, '');
+  let pos = 0;
+  function parseExpr() {
+    let v = parseTerm();
+    while (pos < s.length && (s[pos] === '+' || s[pos] === '-')) {
+      const op = s[pos++]; const r = parseTerm();
+      v = op === '+' ? v + r : v - r;
+    }
+    return v;
+  }
+  function parseTerm() {
+    let v = parseFactor();
+    while (pos < s.length && (s[pos] === '*' || s[pos] === '/')) {
+      const op = s[pos++]; const r = parseFactor();
+      v = op === '*' ? v * r : v / r;
+    }
+    return v;
+  }
+  function parseFactor() {
+    if (s[pos] === '(') { pos++; const v = parseExpr(); if (s[pos] === ')') pos++; return v; }
+    if (s[pos] === '-') { pos++; return -parseFactor(); }
+    let n = '';
+    while (pos < s.length && (s[pos] >= '0' && s[pos] <= '9' || s[pos] === '.')) n += s[pos++];
+    return parseFloat(n) || 0;
+  }
+  try { const r = parseExpr(); return isFinite(r) ? Math.round(r * 100) / 100 : null; } catch { return null; }
+}
+
 const NAV_ITEMS = [
   { label: 'Home', screen: 'Home' },
   { label: 'Weekly Spending', screen: 'Weekly' },
@@ -52,6 +81,8 @@ export default function CustomHeader({ title, onTransactionAdded }) {
   const [selectedTip, setSelectedTip] = useState(18);
   const [customTip, setCustomTip] = useState('');
   const [split, setSplit] = useState(1);
+  const [calcVisible, setCalcVisible] = useState(false);
+  const [calcExpr, setCalcExpr] = useState('');
 
   const tipPct = customTip !== '' ? (parseFloat(customTip) || 0) : selectedTip;
   const billNum = parseFloat(bill) || 0;
@@ -59,13 +90,59 @@ export default function CustomHeader({ title, onTransactionAdded }) {
   const total = billNum + tipAmt;
   const perPerson = split > 1 ? total / split : null;
 
+  const calcResult = React.useMemo(() => calcEval(calcExpr), [calcExpr]);
+  const OPS = new Set(['+', '-', '*', '/']);
+  const OP_MAP = { '−': '-', '÷': '/', '( )': '()' };
+
   function openTip() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setBill('');
     setSelectedTip(18);
     setCustomTip('');
     setSplit(1);
+    setCalcVisible(false);
+    setCalcExpr('');
     setTipVisible(true);
+  }
+
+  function openCalc() {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setCalcExpr(bill || '');
+    setCalcVisible(true);
+  }
+
+  function handleCalcInput(key) {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    if (key === '⌫') { setCalcExpr(p => p.slice(0, -1)); return; }
+    const char = OP_MAP[key] ?? key;
+    if (char === '()') {
+      setCalcExpr(p => {
+        const open = (p.match(/\(/g) || []).length;
+        const close = (p.match(/\)/g) || []).length;
+        const unclosed = open - close;
+        const last = p.slice(-1);
+        return p + (unclosed > 0 && /[\d.)]/.test(last) ? ')' : '(');
+      });
+      return;
+    }
+    if (OPS.has(char)) {
+      setCalcExpr(p => OPS.has(p.slice(-1)) ? p.slice(0, -1) + char : p + char);
+      return;
+    }
+    if (key === '.') {
+      setCalcExpr(p => {
+        const lastNum = p.split(/[+\-*/()]/).pop();
+        return lastNum.includes('.') ? p : p + '.';
+      });
+      return;
+    }
+    setCalcExpr(p => p + char);
+  }
+
+  function applyCalcResult() {
+    const val = calcResult !== null ? calcResult : parseFloat(calcExpr) || 0;
+    setBill(val % 1 === 0 ? String(val) : val.toFixed(2));
+    setCalcVisible(false);
   }
 
   function pickPreset(pct) {
@@ -85,6 +162,7 @@ export default function CustomHeader({ title, onTransactionAdded }) {
 
   function navigateTo(screen) {
     setDropdownVisible(false);
+    if (route.name === screen) return;
     navigation.navigate(screen);
   }
 
@@ -164,15 +242,59 @@ export default function CustomHeader({ title, onTransactionAdded }) {
 
                   {/* Bill input */}
                   <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: 6 }}>Bill Amount</Text>
-                  <TextInput
-                    value={bill}
-                    onChangeText={setBill}
-                    keyboardType="decimal-pad"
-                    placeholder="0.00"
-                    placeholderTextColor={colors.textMuted}
-                    style={{ backgroundColor: colors.background, color: colors.text, borderRadius: 8, borderWidth: 1, borderColor: colors.border, padding: 12, fontSize: 22, fontWeight: '700', textAlign: 'center', marginBottom: 16 }}
-                    selectTextOnFocus
-                  />
+                  <View style={{ flexDirection: 'row', gap: 8, marginBottom: calcVisible ? 10 : 16 }}>
+                    <TextInput
+                      value={bill}
+                      onChangeText={setBill}
+                      keyboardType="decimal-pad"
+                      placeholder="0.00"
+                      placeholderTextColor={colors.textMuted}
+                      style={{ flex: 1, backgroundColor: colors.background, color: colors.text, borderRadius: 8, borderWidth: 1, borderColor: colors.border, padding: 12, fontSize: 22, fontWeight: '700', textAlign: 'center' }}
+                      selectTextOnFocus
+                    />
+                    <Pressable
+                      onPress={openCalc}
+                      style={({ pressed }) => ({ width: 48, borderRadius: 8, borderWidth: 1, borderColor: calcVisible ? colors.accent : colors.border, backgroundColor: pressed ? 'rgba(255,255,255,0.12)' : colors.background, alignItems: 'center', justifyContent: 'center' })}
+                    >
+                      <Text style={{ fontSize: 20, color: colors.textMuted }}>±</Text>
+                    </Pressable>
+                  </View>
+
+                  {/* Calculator panel */}
+                  {calcVisible && (
+                    <View style={{ backgroundColor: colors.background, borderRadius: 10, borderWidth: 1, borderColor: colors.border, padding: 10, marginBottom: 16 }}>
+                      <Text numberOfLines={1} style={{ color: colors.text, fontSize: 15, fontWeight: '600', textAlign: 'right', marginBottom: 8, minHeight: 22 }}>
+                        {(calcExpr || '0').replace(/\*/g, '×').replace(/\//g, '÷')}
+                        {calcResult !== null && calcExpr ? ` = ${calcResult}` : ''}
+                      </Text>
+                      {[['7','8','9','⌫'],['4','5','6','+'],[' 1','2','3','−'],['( )','0','.','÷']].map(row => (
+                        <View key={row.join('')} style={{ flexDirection: 'row', gap: 6, marginBottom: 6 }}>
+                          {row.map(key => {
+                            const k = key.trim();
+                            const isOp = ['+','−','÷'].includes(k);
+                            const isBack = k === '⌫';
+                            const isParen = k === '( )';
+                            return (
+                              <Pressable key={key} onPress={() => handleCalcInput(k)}
+                                style={({ pressed }) => ({ flex: 1, paddingVertical: 13, borderRadius: 7, borderWidth: 1, alignItems: 'center', backgroundColor: pressed ? 'rgba(255,255,255,0.15)' : colors.card, borderColor: pressed ? 'rgba(255,255,255,0.3)' : colors.border })}>
+                                <Text style={{ color: isOp ? colors.accent : isBack ? colors.textMuted : isParen ? colors.accent : colors.text, fontSize: isOp ? 20 : 16, fontWeight: isOp || isBack ? '600' : '500' }}>{k}</Text>
+                              </Pressable>
+                            );
+                          })}
+                        </View>
+                      ))}
+                      <View style={{ flexDirection: 'row', gap: 8 }}>
+                        <Pressable onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setCalcVisible(false); }}
+                          style={({ pressed }) => ({ flex: 1, paddingVertical: 11, borderRadius: 8, borderWidth: 1, borderColor: colors.border, alignItems: 'center', backgroundColor: pressed ? 'rgba(255,255,255,0.12)' : 'transparent' })}>
+                          <Text style={{ color: colors.textMuted, fontWeight: '600' }}>Cancel</Text>
+                        </Pressable>
+                        <Pressable onPress={applyCalcResult}
+                          style={{ flex: 2, paddingVertical: 11, borderRadius: 8, backgroundColor: colors.accent, alignItems: 'center' }}>
+                          <Text style={{ color: '#000', fontWeight: '700' }}>OK</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  )}
 
                   {/* Tip presets */}
                   <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: 8 }}>Tip %</Text>

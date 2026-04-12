@@ -13,12 +13,12 @@ import AccountFilterDropdown from '../components/AccountFilterDropdown';
 
 export default function MonthDetailScreen() {
   const route = useRoute();
-  const { startDate, endDate, label, monthKey } = route.params;
+  const { startDate, endDate, label, monthKey, monthlyBudget: histMonthlyBudget } = route.params;
   const { weeklyBudget, excludedIds, toggleExcluded, overrides, theme } = useAppContext();
   const colors = getTheme(theme.mode, theme.accentColor);
 
   const daysInMonth = (() => { const [y, m] = startDate.split('-').map(Number); return new Date(y, m, 0).getDate(); })();
-  const monthlyBudget = parseFloat((weeklyBudget * daysInMonth / 7).toFixed(2));
+  const monthlyBudget = histMonthlyBudget ?? parseFloat((weeklyBudget * daysInMonth / 7).toFixed(2));
 
   const [transactions, setTransactions] = useState([]);
   const [accounts, setAccounts] = useState([]);

@@ -86,6 +86,7 @@ export default function WeeklyScreen() {
                     endDate: entry.endDate,
                     label,
                     weekKey: entry.weekKey,
+                    weeklyBudget: entry.weeklyBudget,
                   })
                 }
                 style={({ pressed }) => [
