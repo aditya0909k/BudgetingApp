@@ -106,19 +106,25 @@ export function AppProvider({ children }) {
     }
   }
 
-  async function setOverride(transactionId, amount, date) {
+  async function setOverride(transactionId, amount, date, notes) {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setOverrides(prev => {
       const next = { ...prev };
-      if (amount === null) delete next[transactionId];
-      else next[transactionId] = { amount: parseFloat(amount), date };
+      const resolvedNotes = notes !== undefined ? (notes || null) : (prev[transactionId]?.notes || null);
+      if (amount === null) {
+        if (resolvedNotes) next[transactionId] = { notes: resolvedNotes };
+        else delete next[transactionId];
+      } else {
+        next[transactionId] = { amount: parseFloat(amount), date };
+        if (notes !== undefined) next[transactionId].notes = resolvedNotes;
+      }
       return next;
     });
     try {
       const res = await fetch(`${API_BASE_URL}/api/overrides/set`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ transactionId, amount, date }),
+        body: JSON.stringify({ transactionId, amount, date, notes }),
       });
       const data = await res.json();
       if (data.overrides) setOverrides(data.overrides);

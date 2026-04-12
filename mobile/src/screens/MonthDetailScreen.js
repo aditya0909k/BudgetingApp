@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useMemo } from 'react';
 import { View, Text, FlatList, RefreshControl, ActivityIndicator, Pressable } from 'react-native';
+import Svg, { Path } from 'react-native-svg';
 import { useRoute } from '@react-navigation/native';
 import { useAppContext } from '../context/AppContext';
 import { getTheme } from '../theme';
@@ -162,10 +163,22 @@ export default function MonthDetailScreen() {
                     const daySpent = section.transactions
                       .filter(t => !excludedIds.has(t.transaction_id) && (overrides[t.transaction_id]?.amount ?? t.amount) > 0)
                       .reduce((s, t) => s + (overrides[t.transaction_id]?.amount ?? t.amount), 0);
+                    const pct = weeklyBudget > 0 ? Math.min(daySpent / (weeklyBudget / 7), 1) : 0;
+                    const gaugeColor = pct >= 1 ? colors.danger : pct >= 0.75 ? colors.warning : colors.accent;
+                    const trackD = 'M 4 13 A 10 10 0 0 1 24 13';
+                    const fillD = pct >= 1 ? trackD : pct > 0 ? (() => { const a = (180 + pct * 180) * Math.PI / 180; return `M 4 13 A 10 10 0 0 1 ${(14 + 10 * Math.cos(a)).toFixed(2)} ${(13 + 10 * Math.sin(a)).toFixed(2)}`; })() : null;
                     return (
                       <React.Fragment key={section.date}>
-                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.border, borderTopWidth: idx > 0 ? 1 : 0, borderTopColor: colors.border }}>
-                          <Text style={{ fontSize: 12, fontWeight: '700', color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.8 }}>{formatDateHeader(section.date)}</Text>
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingTop: 10, paddingBottom: 8, borderBottomWidth: 1, borderBottomColor: colors.border, borderTopWidth: idx > 0 ? 1 : 0, borderTopColor: colors.border }}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                            <Text style={{ fontSize: 12, fontWeight: '700', color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.8 }}>{formatDateHeader(section.date)}</Text>
+                            <Svg width={28} height={15} viewBox="0 0 28 15">
+                              <Path d={trackD} fill="none" stroke={colors.card} strokeWidth={5} strokeLinecap="round" />
+                              <Path d={trackD} fill="none" stroke={colors.gaugeTrack} strokeWidth={3} strokeLinecap="round" />
+                              {fillD && <Path d={fillD} fill="none" stroke={colors.card} strokeWidth={5} strokeLinecap="round" />}
+                              {fillD && <Path d={fillD} fill="none" stroke={gaugeColor} strokeWidth={3} strokeLinecap="round" />}
+                            </Svg>
+                          </View>
                           {daySpent > 0 && <Text style={{ fontSize: 13, fontWeight: '600', color: colors.text }}>{formatCurrency(daySpent)}</Text>}
                         </View>
                         {section.transactions.map(t => (

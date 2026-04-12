@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { View, Text, Pressable, Modal, TextInput, TouchableWithoutFeedback } from 'react-native';
+import { View, Text, Pressable, Modal, TextInput, TouchableWithoutFeedback, KeyboardAvoidingView, Platform } from 'react-native';
+import * as Haptics from 'expo-haptics';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { formatCurrency, formatDate } from '../utils';
 import { getTheme } from '../theme';
@@ -12,10 +13,12 @@ export default function TransactionRow({ transaction, isExcluded, onPress, onDel
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [amountInput, setAmountInput] = useState('');
   const [selectedDate, setSelectedDate] = useState(new Date());
+  const [notesInput, setNotesInput] = useState('');
 
   const override = overrides[transaction.transaction_id];
   const effectiveAmount = override?.amount ?? transaction.amount;
   const effectiveDate = override?.date ?? transaction.date;
+  const effectiveNotes = (override && 'notes' in override) ? (override.notes ?? '') : (transaction.notes ?? '');
 
   const name = transaction.name || transaction.merchant_name || 'Unknown';
   const isCredit = effectiveAmount < 0;
@@ -26,6 +29,7 @@ export default function TransactionRow({ transaction, isExcluded, onPress, onDel
   function openEdit() {
     setAmountInput(String(Math.abs(effectiveAmount)));
     setSelectedDate(new Date(effectiveDate + 'T12:00:00'));
+    setNotesInput(effectiveNotes);
     setShowDatePicker(false);
     setModal('edit');
   }
@@ -37,18 +41,19 @@ export default function TransactionRow({ transaction, isExcluded, onPress, onDel
       : effectiveAmount;
     const d = selectedDate;
     const newDate = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-    setOverride(transaction.transaction_id, newAmount, newDate);
+    setOverride(transaction.transaction_id, newAmount, newDate, notesInput.trim());
     setModal('none');
     setShowDatePicker(false);
   }
 
   function clearOverride() {
-    setOverride(transaction.transaction_id, null);
+    setOverride(transaction.transaction_id, null, undefined, notesInput.trim());
     setModal('none');
     setShowDatePicker(false);
   }
 
   const dateLabel = selectedDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
 
   return (
     <>
@@ -81,17 +86,15 @@ export default function TransactionRow({ transaction, isExcluded, onPress, onDel
                   <Text style={{ fontSize: 10, color: colors.excludedText, fontWeight: '600' }}>excluded</Text>
                 </View>
               )}
-              {override && (
-                <View style={{ marginLeft: 8, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, backgroundColor: colors.card }}>
-                  <Text style={{ fontSize: 10, color: colors.accent, fontWeight: '600' }}>edited</Text>
-                </View>
-              )}
               {transaction.offlineQueued && (
                 <View style={{ marginLeft: 8, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, backgroundColor: colors.warning + '33' }}>
                   <Text style={{ fontSize: 10, color: colors.warning, fontWeight: '600' }}>queued</Text>
                 </View>
               )}
             </View>
+            {effectiveNotes ? (
+              <Text style={{ fontSize: 12, color: colors.textMuted, marginTop: 2 }} numberOfLines={1}>{effectiveNotes}</Text>
+            ) : null}
           </View>
 
           <View style={{ alignItems: 'flex-end' }}>
@@ -110,6 +113,7 @@ export default function TransactionRow({ transaction, isExcluded, onPress, onDel
 
       {/* Edit / Date picker modal */}
       <Modal transparent visible={modal === 'edit'} animationType="fade" onRequestClose={() => { setModal('none'); setShowDatePicker(false); }}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
         <TouchableWithoutFeedback onPress={() => { setModal('none'); setShowDatePicker(false); }}>
           <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center' }}>
             <TouchableWithoutFeedback>
@@ -135,25 +139,38 @@ export default function TransactionRow({ transaction, isExcluded, onPress, onDel
                   <Text style={{ color: colors.text, fontSize: 16, fontWeight: '700', marginBottom: 4 }}>Edit Transaction</Text>
                   <Text style={{ color: colors.textMuted, fontSize: 13, marginBottom: 16 }}>{name}</Text>
 
-                  <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: 6 }}>Amount</Text>
-                  <TextInput
-                    value={amountInput}
-                    onChangeText={setAmountInput}
-                    keyboardType="decimal-pad"
-                    style={{
-                      backgroundColor: colors.background,
-                      color: colors.text,
-                      borderRadius: 8,
-                      borderWidth: 1,
-                      borderColor: colors.border,
-                      padding: 12,
-                      fontSize: 18,
-                      fontWeight: '600',
-                      marginBottom: 14,
-                      textAlign: 'center',
-                    }}
-                    selectTextOnFocus
-                  />
+                  {!showDatePicker && (
+                    <>
+                      <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: 6 }}>Amount</Text>
+                      <TextInput
+                        value={amountInput}
+                        onChangeText={setAmountInput}
+                        keyboardType="decimal-pad"
+                        style={{
+                          backgroundColor: colors.background,
+                          color: colors.text,
+                          borderRadius: 8,
+                          borderWidth: 1,
+                          borderColor: colors.border,
+                          padding: 12,
+                          fontSize: 18,
+                          fontWeight: '600',
+                          marginBottom: 14,
+                          textAlign: 'center',
+                        }}
+                        selectTextOnFocus
+                      />
+
+                      <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: 6 }}>Notes</Text>
+                      <TextInput
+                        value={notesInput}
+                        onChangeText={setNotesInput}
+                        placeholder="Optional note"
+                        placeholderTextColor={colors.textMuted}
+                        style={{ backgroundColor: colors.background, color: colors.text, borderRadius: 8, borderWidth: 1, borderColor: colors.border, padding: 12, fontSize: 14, marginBottom: 14 }}
+                      />
+                    </>
+                  )}
 
                   <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: 6 }}>Date</Text>
                   {showDatePicker && (
@@ -167,31 +184,28 @@ export default function TransactionRow({ transaction, isExcluded, onPress, onDel
                     />
                   )}
                   <Pressable
-                    onPress={() => setShowDatePicker(prev => !prev)}
-                    style={{
-                      backgroundColor: colors.background,
-                      borderRadius: 8,
-                      borderWidth: 1,
+                    onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setShowDatePicker(prev => !prev); }}
+                    style={({ pressed }) => ({
+                      borderRadius: 8, borderWidth: 1,
                       borderColor: showDatePicker ? colors.accent : colors.border,
-                      padding: 12,
-                      marginBottom: 20,
-                      alignItems: 'center',
-                    }}
+                      padding: 12, marginBottom: 20, alignItems: 'center',
+                      backgroundColor: pressed ? 'rgba(255,255,255,0.12)' : colors.background,
+                    })}
                   >
                     <Text style={{ color: colors.accent, fontSize: 15, fontWeight: '500' }}>{dateLabel}</Text>
                   </Pressable>
 
                   <View style={{ flexDirection: 'row', gap: 8 }}>
                     {transaction.manual && onDelete ? (
-                      <Pressable onPress={() => { setModal('none'); setShowDatePicker(false); onDelete(transaction.transaction_id); }} style={{ flex: 1, padding: 12, borderRadius: 8, borderWidth: 1, borderColor: colors.danger, alignItems: 'center' }}>
+                      <Pressable onPress={() => { setModal('none'); setShowDatePicker(false); onDelete(transaction.transaction_id); }} style={({ pressed }) => ({ flex: 1, padding: 12, borderRadius: 8, borderWidth: 1, borderColor: colors.danger, alignItems: 'center', backgroundColor: pressed ? 'rgba(255,255,255,0.08)' : 'transparent' })}>
                         <Text style={{ color: colors.danger, fontWeight: '600' }}>Delete</Text>
                       </Pressable>
                     ) : override ? (
-                      <Pressable onPress={clearOverride} style={{ flex: 1, padding: 12, borderRadius: 8, borderWidth: 1, borderColor: colors.danger, alignItems: 'center' }}>
+                      <Pressable onPress={clearOverride} style={({ pressed }) => ({ flex: 1, padding: 12, borderRadius: 8, borderWidth: 1, borderColor: colors.danger, alignItems: 'center', backgroundColor: pressed ? 'rgba(255,255,255,0.08)' : 'transparent' })}>
                         <Text style={{ color: colors.danger, fontWeight: '600' }}>Reset</Text>
                       </Pressable>
                     ) : null}
-                    <Pressable onPress={() => { setModal('none'); setShowDatePicker(false); }} style={{ flex: 1, padding: 12, borderRadius: 8, borderWidth: 1, borderColor: colors.border, alignItems: 'center' }}>
+                    <Pressable onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setModal('none'); setShowDatePicker(false); }} style={({ pressed }) => ({ flex: 1, padding: 12, borderRadius: 8, borderWidth: 1, borderColor: colors.border, alignItems: 'center', backgroundColor: pressed ? 'rgba(255,255,255,0.12)' : 'transparent' })}>
                       <Text style={{ color: colors.textMuted, fontWeight: '600' }}>Cancel</Text>
                     </Pressable>
                     <Pressable onPress={saveOverride} style={{ flex: 1, padding: 12, borderRadius: 8, backgroundColor: colors.accent, alignItems: 'center' }}>
@@ -200,9 +214,11 @@ export default function TransactionRow({ transaction, isExcluded, onPress, onDel
                   </View>
                 </View>
               )}
+
             </TouchableWithoutFeedback>
           </View>
         </TouchableWithoutFeedback>
+        </KeyboardAvoidingView>
       </Modal>
     </>
   );

@@ -666,16 +666,21 @@ app.get('/api/overrides', (req, res) => {
 
 // POST /api/overrides/set
 app.post('/api/overrides/set', (req, res) => {
-  const { transactionId, amount, date } = req.body;
+  const { transactionId, amount, date, notes } = req.body;
   if (!transactionId || typeof transactionId !== 'string') return res.status(400).json({ error: 'invalid transactionId' });
   const data = readJSON(FILES.overrides) || {};
+  // notes: non-empty string = set, '' or null = clear, undefined = preserve existing
+  const existingNotes = data[transactionId]?.notes;
+  const resolvedNotes = notes !== undefined ? (notes || null) : (existingNotes || null);
   if (amount === null || amount === undefined) {
-    delete data[transactionId];
+    if (resolvedNotes) data[transactionId] = { notes: resolvedNotes };
+    else delete data[transactionId];
   } else {
     const parsed = parseFloat(amount);
     if (!isFinite(parsed)) return res.status(400).json({ error: 'invalid amount' });
     data[transactionId] = { amount: parsed };
     if (date && typeof date === 'string') data[transactionId].date = date;
+    if (notes !== undefined) data[transactionId].notes = resolvedNotes;
   }
   writeJSON(FILES.overrides, data);
   res.json({ overrides: data });
@@ -683,7 +688,7 @@ app.post('/api/overrides/set', (req, res) => {
 
 // POST /api/transactions/add — add a manual transaction
 app.post('/api/transactions/add', (req, res) => {
-  const { name, amount, date } = req.body;
+  const { name, amount, date, notes } = req.body;
   if (!name || typeof name !== 'string' || !name.trim()) return res.status(400).json({ error: 'name required' });
   const parsed = parseFloat(amount);
   if (!isFinite(parsed) || parsed <= 0) return res.status(400).json({ error: 'amount must be a positive number' });
@@ -697,6 +702,7 @@ app.post('/api/transactions/add', (req, res) => {
     date,
     pending: false,
     manual: true,
+    ...(notes && typeof notes === 'string' && notes.trim() ? { notes: notes.trim() } : {}),
   };
   const data = readJSON(FILES.manualTxns) || [];
   data.push(txn);
