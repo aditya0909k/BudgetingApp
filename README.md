@@ -176,6 +176,13 @@ If you have no internet connection, the home screen loads from cached data and s
 - **Monthly Spending** — tap any month to see its transactions
 - History totals update automatically when you open a detail screen
 
+### Trends
+Tap **Trends** in the navigation dropdown for a spending line chart.
+
+- **Period selector**: 1W (by day), 1M / 3M (by week), 6M / 1Y / All (by month). Periods gray out until you have enough history.
+- **Scrub**: press and hold anywhere on the chart and slide your finger to explore specific data points — shows the exact amount and label. Scrolling is locked while scrubbing.
+- **Insights**: below the chart, each period shows % change vs the previous one with a green ▼ (spent less) or red ▲ (spent more) indicator.
+
 ### Settings
 - **Weekly Budget** — change how much you want to spend per week. Monthly budget is calculated proportionally.
 - **Theme** — light or dark mode

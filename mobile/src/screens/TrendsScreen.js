@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   View, Text, ScrollView, Pressable, ActivityIndicator,
   Dimensions, PanResponder,
@@ -14,6 +14,7 @@ import { useAppContext } from '../context/AppContext';
 import { formatCurrency, getCurrentWeekRange } from '../utils';
 import { API_BASE_URL } from '../config';
 import CustomHeader from '../components/CustomHeader';
+import { useFocusEffect } from '@react-navigation/native';
 
 const SCREEN_W = Dimensions.get('window').width;
 const CHART_W = SCREEN_W - 32;
@@ -53,24 +54,34 @@ function fmtY(v) {
 function smoothPath(pts) {
   if (!pts.length) return '';
   if (pts.length === 1) return `M ${pts[0].x} ${pts[0].y}`;
+  const n = pts.length;
+  const dx = [], dy = [], m = [];
+  for (let i = 0; i < n - 1; i++) {
+    dx[i] = pts[i+1].x - pts[i].x;
+    dy[i] = pts[i+1].y - pts[i].y;
+    m[i] = dy[i] / dx[i];
+  }
+  const t = new Array(n);
+  t[0] = m[0];
+  t[n-1] = m[n-2];
+  for (let i = 1; i < n - 1; i++) {
+    t[i] = m[i-1] * m[i] <= 0 ? 0 : (m[i-1] + m[i]) / 2;
+  }
+  for (let i = 0; i < n - 1; i++) {
+    if (Math.abs(m[i]) < 1e-10) { t[i] = t[i+1] = 0; continue; }
+    const a = t[i] / m[i], b = t[i+1] / m[i], s = a*a + b*b;
+    if (s > 9) { const tau = 3 / Math.sqrt(s); t[i] = tau*a*m[i]; t[i+1] = tau*b*m[i]; }
+  }
   let d = `M ${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)}`;
-  for (let i = 0; i < pts.length - 1; i++) {
-    const a = i > 0 ? pts[i - 1] : pts[i];
-    const b = pts[i];
-    const c = pts[i + 1];
-    const e = i + 2 < pts.length ? pts[i + 2] : c;
-    const t = 0.35;
-    const c1x = b.x + (c.x - a.x) * t;
-    const c1y = b.y + (c.y - a.y) * t;
-    const c2x = c.x - (e.x - b.x) * t;
-    const c2y = c.y - (e.y - b.y) * t;
-    d += ` C ${c1x.toFixed(1)} ${c1y.toFixed(1)} ${c2x.toFixed(1)} ${c2y.toFixed(1)} ${c.x.toFixed(1)} ${c.y.toFixed(1)}`;
+  for (let i = 0; i < n - 1; i++) {
+    const h = dx[i];
+    d += ` C ${(pts[i].x + h/3).toFixed(1)} ${(pts[i].y + t[i]*h/3).toFixed(1)} ${(pts[i+1].x - h/3).toFixed(1)} ${(pts[i+1].y - t[i+1]*h/3).toFixed(1)} ${pts[i+1].x.toFixed(1)} ${pts[i+1].y.toFixed(1)}`;
   }
   return d;
 }
 
 export default function TrendsScreen() {
-  const { theme } = useAppContext();
+  const { theme, overrides, excludedIds } = useAppContext();
   const colors = getTheme(theme.mode, theme.accentColor);
   const insets = useSafeAreaInsets();
   const accent = colors.accent;
@@ -78,7 +89,7 @@ export default function TrendsScreen() {
   const [period, setPeriod] = useState('1M');
   const [weeklyHist, setWeeklyHist] = useState([]);
   const [monthlyHist, setMonthlyHist] = useState([]);
-  const [dailyData, setDailyData] = useState([]);
+  const [rawWeekTxns, setRawWeekTxns] = useState([]);
   const [loading, setLoading] = useState(true);
   const [scrubIdx, setScrubIdx] = useState(-1);
 
@@ -89,24 +100,11 @@ export default function TrendsScreen() {
     AsyncStorage.getItem(PERIOD_KEY).then(p => {
       if (p && PERIODS.includes(p)) setPeriod(p);
     }).catch(() => {});
-    load();
   }, []);
 
-  async function load() {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [wr, mr] = await Promise.all([
-        fetch(`${API_BASE_URL}/api/history/weekly`),
-        fetch(`${API_BASE_URL}/api/history/monthly`),
-      ]);
-      const wd = await wr.json();
-      const md = await mr.json();
-
-      const weeks = (wd.history || []).sort((a, b) => a.startDate > b.startDate ? 1 : -1);
-      const months = (md.history || []).sort((a, b) => a.startDate > b.startDate ? 1 : -1);
-      setWeeklyHist(weeks);
-      setMonthlyHist(months);
-
       const { startDate } = getCurrentWeekRange();
       const [sy, sm, sd] = startDate.split('-').map(Number);
       const endDate = (() => {
@@ -114,26 +112,41 @@ export default function TrendsScreen() {
         return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
       })();
 
-      const tr = await fetch(`${API_BASE_URL}/api/transactions?startDate=${startDate}&endDate=${endDate}`);
-      const td = await tr.json();
-      const txns = td.transactions || [];
+      const [wr, mr, tr] = await Promise.all([
+        fetch(`${API_BASE_URL}/api/history/weekly`),
+        fetch(`${API_BASE_URL}/api/history/monthly`),
+        fetch(`${API_BASE_URL}/api/transactions?startDate=${startDate}&endDate=${endDate}`),
+      ]);
+      const [wd, md, td] = await Promise.all([wr.json(), mr.json(), tr.json()]);
 
-      const totals = {};
-      for (const tx of txns) {
-        if (typeof tx.amount === 'number' && tx.amount > 0) {
-          totals[tx.date] = (totals[tx.date] || 0) + tx.amount;
-        }
-      }
-
-      const daily = Array.from({ length: 7 }, (_, i) => {
-        const dt = new Date(sy, sm - 1, sd + i);
-        const key = `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
-        return { label: SDOW[dt.getDay()], amount: parseFloat((totals[key] || 0).toFixed(2)) };
-      });
-      setDailyData(daily);
+      setWeeklyHist((wd.history || []).sort((a, b) => a.startDate > b.startDate ? 1 : -1));
+      setMonthlyHist((md.history || []).sort((a, b) => a.startDate > b.startDate ? 1 : -1));
+      setRawWeekTxns(td.transactions || []);
     } catch {}
     setLoading(false);
-  }
+  }, []);
+
+  useFocusEffect(useCallback(() => { load(); }, [load]));
+
+  // Daily totals for 1W — applies overrides and excludedIds from context
+  const dailyData = useMemo(() => {
+    const { startDate } = getCurrentWeekRange();
+    const [sy, sm, sd] = startDate.split('-').map(Number);
+    const totals = {};
+    for (const tx of rawWeekTxns) {
+      if (excludedIds.has(tx.transaction_id)) continue;
+      const effectiveDate = overrides[tx.transaction_id]?.date ?? tx.date;
+      const effectiveAmount = overrides[tx.transaction_id]?.amount ?? tx.amount;
+      if (typeof effectiveAmount === 'number' && effectiveAmount > 0) {
+        totals[effectiveDate] = (totals[effectiveDate] || 0) + effectiveAmount;
+      }
+    }
+    return Array.from({ length: 7 }, (_, i) => {
+      const dt = new Date(sy, sm - 1, sd + i);
+      const key = `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+      return { label: SDOW[dt.getDay()], amount: parseFloat((totals[key] || 0).toFixed(2)) };
+    });
+  }, [rawWeekTxns, overrides, excludedIds]);
 
   function avail(p) {
     const mc = monthlyHist.length, wc = weeklyHist.length;
@@ -191,7 +204,10 @@ export default function TrendsScreen() {
 
   const panR = useRef(PanResponder.create({
     onStartShouldSetPanResponder: () => true,
+    onStartShouldSetPanResponderCapture: () => true,
     onMoveShouldSetPanResponder: () => true,
+    onMoveShouldSetPanResponderCapture: () => true,
+    onPanResponderTerminationRequest: () => false,
     onPanResponderGrant: e => {
       const x = e.nativeEvent.locationX;
       const p = ptsRef.current;
@@ -226,7 +242,7 @@ export default function TrendsScreen() {
 
   const scrubPt = scrubIdx >= 0 && scrubIdx < pts.length ? pts[scrubIdx] : null;
   const xStep = Math.max(1, Math.ceil(pts.length / 7));
-  const showAllDots = pts.length <= 7;
+  const showAllDots = pts.length <= 13;
 
   // Insights: most recent first, compare each to previous
   const insights = useMemo(() => {
@@ -237,7 +253,7 @@ export default function TrendsScreen() {
         ? (d.amount - chartData[i-1].amount) / chartData[i-1].amount * 100
         : null,
       delta: i > 0 ? d.amount - chartData[i-1].amount : null,
-    })).reverse();
+    }));
   }, [chartData]);
 
   if (loading) {
@@ -254,7 +270,7 @@ export default function TrendsScreen() {
   return (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
       <CustomHeader />
-      <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + 32 }} showsVerticalScrollIndicator={false}>
+      <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + 32 }} showsVerticalScrollIndicator={false} scrollEnabled={scrubIdx < 0}>
 
         {/* Period selector */}
         <View style={{ flexDirection: 'row', paddingHorizontal: 16, paddingTop: 14, paddingBottom: 10, gap: 6 }}>
@@ -354,9 +370,8 @@ export default function TrendsScreen() {
               {/* Dots */}
               {pts.map((pt, i) => {
                 const isScrub = scrubPt && scrubIdx === i;
-                const isEndpoint = !scrubPt && (i === 0 || i === pts.length - 1);
+                const isEndpoint = i === 0 || i === pts.length - 1;
                 if (!isScrub && !isEndpoint && !showAllDots) return null;
-                if (scrubPt && !isScrub) return null;
                 return (
                   <React.Fragment key={i}>
                     {isScrub && <Circle cx={pt.x} cy={pt.y} r={14} fill={accent} opacity={0.1} />}
@@ -366,6 +381,7 @@ export default function TrendsScreen() {
                       fill={colors.card}
                       stroke={accent}
                       strokeWidth={isScrub ? 2.5 : 1.8}
+                      opacity={isScrub ? 1 : scrubPt ? 0.4 : 1}
                     />
                   </React.Fragment>
                 );
