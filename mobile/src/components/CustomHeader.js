@@ -51,12 +51,14 @@ const NAV_ITEMS = [
   { label: 'Home', screen: 'Home' },
   { label: 'Weekly Spending', screen: 'Weekly' },
   { label: 'Monthly Spending', screen: 'Monthly' },
+  { label: 'Trends', screen: 'Trends' },
 ];
 
 const SCREEN_LABELS = {
   Home: 'Home',
   Weekly: 'Weekly Spending',
   Monthly: 'Monthly Spending',
+  Trends: 'Trends',
   WeekDetail: null,
   MonthDetail: null,
   Settings: 'Settings',

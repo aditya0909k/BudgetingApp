@@ -11,6 +11,7 @@ import MonthlyScreen from './src/screens/MonthlyScreen';
 import WeekDetailScreen from './src/screens/WeekDetailScreen';
 import MonthDetailScreen from './src/screens/MonthDetailScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
+import TrendsScreen from './src/screens/TrendsScreen';
 
 const Stack = createNativeStackNavigator();
 
@@ -27,6 +28,7 @@ export default function App() {
             <Stack.Screen name="WeekDetail" component={WeekDetailScreen} />
             <Stack.Screen name="MonthDetail" component={MonthDetailScreen} />
             <Stack.Screen name="Settings" component={SettingsScreen} />
+            <Stack.Screen name="Trends" component={TrendsScreen} />
           </Stack.Navigator>
         </NavigationContainer>
       </AppProvider>
