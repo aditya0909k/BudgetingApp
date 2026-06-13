@@ -405,8 +405,13 @@ async function runSnapshot() {
     const all = [...tellerTxns, ...manualAll];
     if (!all.length) return;
 
+    const overridesData = readJSON(FILES.overrides) || {};
+
     const filterRange = (start, end) =>
-      all.filter(t => t.date >= start && t.date <= end);
+      all.filter(t => {
+        const effectiveDate = overridesData[t.transaction_id]?.date ?? t.date;
+        return effectiveDate >= start && effectiveDate <= end;
+      });
 
     const weekTxns  = filterRange(weekRange.startDate, weekRange.endDate);
     const monthTxns = filterRange(monthRange.startDate, monthRange.endDate);
@@ -414,7 +419,7 @@ async function runSnapshot() {
     const spent = txns =>
       txns
         .filter(t => !excludedSet.has(t.transaction_id) && typeof t.amount === 'number' && t.amount > 0)
-        .reduce((s, t) => s + t.amount, 0);
+        .reduce((s, t) => s + (overridesData[t.transaction_id]?.amount ?? t.amount), 0);
 
     const weekSpent  = spent(weekTxns);
     const monthSpent = spent(monthTxns);
@@ -692,14 +697,18 @@ app.get('/api/overrides', (req, res) => {
 
 // POST /api/overrides/set
 app.post('/api/overrides/set', (req, res) => {
-  const { transactionId, amount, date, notes } = req.body;
+  const { transactionId, amount, date, notes, who, name } = req.body;
   if (!transactionId || typeof transactionId !== 'string') return res.status(400).json({ error: 'invalid transactionId' });
   const data = readJSON(FILES.overrides) || {};
-  // notes: non-empty string = set, '' or null = clear, undefined = preserve existing
-  const existingNotes = data[transactionId]?.notes;
-  const resolvedNotes = notes !== undefined ? (notes || null) : (existingNotes || null);
+  const resolvedNotes = notes !== undefined ? (notes || null) : (data[transactionId]?.notes || null);
+  const resolvedWho = who !== undefined ? (who || null) : (data[transactionId]?.who || null);
+  const resolvedName = name !== undefined ? (name || null) : (data[transactionId]?.name || null);
   if (amount === null || amount === undefined) {
-    if (resolvedNotes) data[transactionId] = { notes: resolvedNotes };
+    const entry = {};
+    if (resolvedNotes) entry.notes = resolvedNotes;
+    if (resolvedWho && resolvedWho !== 'me') entry.who = resolvedWho;
+    if (resolvedName) entry.name = resolvedName;
+    if (Object.keys(entry).length) data[transactionId] = entry;
     else delete data[transactionId];
   } else {
     const parsed = parseFloat(amount);
@@ -707,6 +716,8 @@ app.post('/api/overrides/set', (req, res) => {
     data[transactionId] = { amount: parsed };
     if (date && typeof date === 'string') data[transactionId].date = date;
     if (notes !== undefined) data[transactionId].notes = resolvedNotes;
+    if (resolvedWho && resolvedWho !== 'me') data[transactionId].who = resolvedWho;
+    if (resolvedName) data[transactionId].name = resolvedName;
   }
   writeJSON(FILES.overrides, data);
   res.json({ overrides: data });
@@ -714,7 +725,7 @@ app.post('/api/overrides/set', (req, res) => {
 
 // POST /api/transactions/add — add a manual transaction
 app.post('/api/transactions/add', (req, res) => {
-  const { name, amount, date, notes } = req.body;
+  const { name, amount, date, notes, who } = req.body;
   if (!name || typeof name !== 'string' || !name.trim()) return res.status(400).json({ error: 'name required' });
   const parsed = parseFloat(amount);
   if (!isFinite(parsed) || parsed <= 0) return res.status(400).json({ error: 'amount must be a positive number' });
@@ -729,6 +740,7 @@ app.post('/api/transactions/add', (req, res) => {
     pending: false,
     manual: true,
     ...(notes && typeof notes === 'string' && notes.trim() ? { notes: notes.trim() } : {}),
+    ...(who && who !== 'me' ? { who } : {}),
   };
   const data = readJSON(FILES.manualTxns) || [];
   data.push(txn);

@@ -161,8 +161,10 @@ Quick-select name chips (Food, Grocery) and date arrow buttons (`‹` `›`) mak
 Tap any transaction to exclude it from your budget totals. Tap again to re-include. Useful for transfers, refunds, or anything you don't want counted.
 
 ### Editing a transaction
-Long-press any transaction to edit its amount or date. This is useful when a pending transaction posts with the wrong date, or you want to split it into a different week.
+Long-press any transaction to edit its name, amount, date, notes, and who the expense belongs to (Me / Both / Others). This is useful when a pending transaction posts with the wrong date, or you want to split it into a different week.
 
+- **Name chips**: quickly categorize with Food, Grocery, or Misc
+- **Who chips**: tag spending as Me, Both (shared), or Others — the gauge shows a subtle split line when there's a mix
 - **Manual transactions** (ones you entered): shows a Delete button
 - **Edited transactions**: shows a Reset button to undo
 

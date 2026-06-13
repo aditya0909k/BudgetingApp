@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { View, Text } from 'react-native';
-import Svg, { Path } from 'react-native-svg';
+import Svg, { Path, Line } from 'react-native-svg';
 import { getTheme } from '../theme';
 import { useAppContext } from '../context/AppContext';
 import { formatCurrency } from '../utils';
@@ -46,7 +46,7 @@ function arcPath(cx, cy, r, startDeg, endDeg, clockwise = true) {
 // Track: full 280° from START_DEG to END_DEG clockwise
 const TRACK_PATH = arcPath(CX, CY, RADIUS, START_DEG, END_DEG, true);
 
-export default function ArcGauge({ spent, budget, accentColor, period = 'week' }) {
+export default function ArcGauge({ spent, budget, accentColor, period = 'week', meRatio = null }) {
   const { theme } = useAppContext();
   const colors = getTheme(theme.mode, accentColor || theme.accentColor);
 
@@ -113,6 +113,24 @@ export default function ArcGauge({ spent, budget, accentColor, period = 'week' }
               strokeLinecap="round"
             />
           )}
+          {/* Me/Others split tick — radial line at the split point */}
+          {fillPath && meRatio !== null && meRatio > 0 && meRatio < 1 && (() => {
+            const tickAngle = START_DEG + meRatio * pct * TOTAL_DEG;
+            const rad = degToRad(tickAngle);
+            const inner = RADIUS - STROKE_WIDTH / 2 - 2;
+            const outer = RADIUS + STROKE_WIDTH / 2 + 2;
+            return (
+              <Line
+                x1={CX + inner * Math.cos(rad)}
+                y1={CY + inner * Math.sin(rad)}
+                x2={CX + outer * Math.cos(rad)}
+                y2={CY + outer * Math.sin(rad)}
+                stroke={colors.background}
+                strokeWidth={2.5}
+                strokeLinecap="round"
+              />
+            );
+          })()}
         </Svg>
 
         {/* Center text — absolutely positioned at arc center (CX=150, CY=140).

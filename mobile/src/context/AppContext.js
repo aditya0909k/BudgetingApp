@@ -4,6 +4,7 @@ import * as Haptics from 'expo-haptics';
 import { API_BASE_URL } from '../config';
 
 const AppContext = createContext(null);
+const OVERRIDE_QUEUE_KEY = 'offline_override_queue';
 
 async function fetchWithRetry(url, options, attempts = 3) {
   for (let i = 0; i < attempts; i++) {
@@ -26,7 +27,9 @@ export function AppProvider({ children }) {
   const [overrides, setOverrides] = useState({});
   const [linkedAccounts, setLinkedAccounts] = useState([]);
   const [theme, setThemeState] = useState({ mode: 'dark', accentColor: '#4ade80' });
+  const [pendingOverrideIds, setPendingOverrideIds] = useState(new Set());
 
+  // Load theme
   useEffect(() => {
     (async () => {
       try {
@@ -42,11 +45,45 @@ export function AppProvider({ children }) {
     })();
   }, []);
 
+  // Load server data + restore any queued offline overrides
   useEffect(() => {
     fetchBudget();
     fetchExcluded();
     fetchOverrides();
     refreshAccounts();
+    // Restore queued overrides to local state so edits survive app restarts
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(OVERRIDE_QUEUE_KEY);
+        if (!raw) return;
+        const queue = JSON.parse(raw);
+        if (!queue.length) return;
+        setPendingOverrideIds(new Set(queue.map(q => q.transactionId)));
+        setOverrides(prev => {
+          const next = { ...prev };
+          for (const item of queue) {
+            const resolvedNotes = item.notes || null;
+            const resolvedWho = (item.who && item.who !== 'me') ? item.who : null;
+            const resolvedName = item.name || null;
+            if (item.amount === null || item.amount === undefined) {
+              const entry = {};
+              if (resolvedNotes) entry.notes = resolvedNotes;
+              if (resolvedWho) entry.who = resolvedWho;
+              if (resolvedName) entry.name = resolvedName;
+              if (Object.keys(entry).length) next[item.transactionId] = entry;
+              else delete next[item.transactionId];
+            } else {
+              next[item.transactionId] = { amount: parseFloat(item.amount) };
+              if (item.date) next[item.transactionId].date = item.date;
+              if (resolvedNotes) next[item.transactionId].notes = resolvedNotes;
+              if (resolvedWho) next[item.transactionId].who = resolvedWho;
+              if (resolvedName) next[item.transactionId].name = resolvedName;
+            }
+          }
+          return next;
+        });
+      } catch {}
+    })();
   }, []);
 
   async function fetchBudget() {
@@ -81,6 +118,36 @@ export function AppProvider({ children }) {
     } catch (e) {}
   }, []);
 
+  // Flush queued offline overrides — called at start of fetchData in HomeScreen
+  const flushOverrideQueue = useCallback(async () => {
+    try {
+      const raw = await AsyncStorage.getItem(OVERRIDE_QUEUE_KEY);
+      if (!raw) return;
+      const queue = JSON.parse(raw);
+      if (!queue.length) return;
+      const remaining = [];
+      for (const item of queue) {
+        try {
+          const res = await fetch(`${API_BASE_URL}/api/overrides/set`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(item),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (data.overrides) setOverrides(data.overrides);
+            setPendingOverrideIds(prev => { const next = new Set(prev); next.delete(item.transactionId); return next; });
+          } else {
+            remaining.push(item);
+          }
+        } catch {
+          remaining.push(item);
+        }
+      }
+      await AsyncStorage.setItem(OVERRIDE_QUEUE_KEY, JSON.stringify(remaining));
+    } catch {}
+  }, []);
+
   function setWeeklyBudget(val) {
     setWeeklyBudgetState(val);
   }
@@ -106,17 +173,25 @@ export function AppProvider({ children }) {
     }
   }
 
-  async function setOverride(transactionId, amount, date, notes) {
+  async function setOverride(transactionId, amount, date, notes, who, name) {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setOverrides(prev => {
       const next = { ...prev };
       const resolvedNotes = notes !== undefined ? (notes || null) : (prev[transactionId]?.notes || null);
+      const resolvedWho = who !== undefined ? who : (prev[transactionId]?.who || null);
+      const resolvedName = name !== undefined ? (name || null) : (prev[transactionId]?.name || null);
       if (amount === null) {
-        if (resolvedNotes) next[transactionId] = { notes: resolvedNotes };
+        const entry = {};
+        if (resolvedNotes) entry.notes = resolvedNotes;
+        if (resolvedWho && resolvedWho !== 'me') entry.who = resolvedWho;
+        if (resolvedName) entry.name = resolvedName;
+        if (Object.keys(entry).length) next[transactionId] = entry;
         else delete next[transactionId];
       } else {
         next[transactionId] = { amount: parseFloat(amount), date };
         if (notes !== undefined) next[transactionId].notes = resolvedNotes;
+        if (resolvedWho && resolvedWho !== 'me') next[transactionId].who = resolvedWho;
+        if (resolvedName) next[transactionId].name = resolvedName;
       }
       return next;
     });
@@ -124,12 +199,22 @@ export function AppProvider({ children }) {
       const res = await fetch(`${API_BASE_URL}/api/overrides/set`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ transactionId, amount, date, notes }),
+        body: JSON.stringify({ transactionId, amount, date, notes, who, name }),
       });
       const data = await res.json();
       if (data.overrides) setOverrides(data.overrides);
+      // Synced — remove from pending queue
+      setPendingOverrideIds(prev => { const next = new Set(prev); next.delete(transactionId); return next; });
     } catch (e) {
-      fetchOverrides();
+      // Offline — queue for later, mark as pending
+      try {
+        const raw = await AsyncStorage.getItem(OVERRIDE_QUEUE_KEY) || '[]';
+        const queue = JSON.parse(raw);
+        const deduped = queue.filter(q => q.transactionId !== transactionId);
+        deduped.push({ transactionId, amount, date, notes, who, name });
+        await AsyncStorage.setItem(OVERRIDE_QUEUE_KEY, JSON.stringify(deduped));
+      } catch {}
+      setPendingOverrideIds(prev => new Set([...prev, transactionId]));
     }
   }
 
@@ -151,6 +236,8 @@ export function AppProvider({ children }) {
         toggleExcluded,
         overrides,
         setOverride,
+        pendingOverrideIds,
+        flushOverrideQueue,
         linkedAccounts,
         refreshAccounts,
         theme,

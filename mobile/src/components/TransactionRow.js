@@ -7,20 +7,23 @@ import { getTheme } from '../theme';
 import { useAppContext } from '../context/AppContext';
 
 export default function TransactionRow({ transaction, isExcluded, onPress, onDelete }) {
-  const { theme, overrides, setOverride } = useAppContext();
+  const { theme, overrides, setOverride, pendingOverrideIds } = useAppContext();
   const colors = getTheme(theme.mode, theme.accentColor);
   const [modal, setModal] = useState('none'); // 'none' | 'edit'
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [amountInput, setAmountInput] = useState('');
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [notesInput, setNotesInput] = useState('');
+  const [whoInput, setWhoInput] = useState('me');
+  const [nameInput, setNameInput] = useState('');
 
   const override = overrides[transaction.transaction_id];
   const effectiveAmount = override?.amount ?? transaction.amount;
   const effectiveDate = override?.date ?? transaction.date;
   const effectiveNotes = (override && 'notes' in override) ? (override.notes ?? '') : (transaction.notes ?? '');
+  const isPendingOverride = pendingOverrideIds?.has(transaction.transaction_id);
 
-  const name = transaction.name || transaction.merchant_name || 'Unknown';
+  const name = override?.name ?? transaction.name ?? transaction.merchant_name ?? 'Unknown';
   const isCredit = effectiveAmount < 0;
   const amount = (isCredit ? '−' : '') + formatCurrency(effectiveAmount);
   const dateStr = formatDate(effectiveDate);
@@ -30,6 +33,8 @@ export default function TransactionRow({ transaction, isExcluded, onPress, onDel
     setAmountInput(String(Math.abs(effectiveAmount)));
     setSelectedDate(new Date(effectiveDate + 'T12:00:00'));
     setNotesInput(effectiveNotes);
+    setWhoInput(override?.who ?? transaction.who ?? 'me');
+    setNameInput(name);
     setShowDatePicker(false);
     setModal('edit');
   }
@@ -41,13 +46,15 @@ export default function TransactionRow({ transaction, isExcluded, onPress, onDel
       : effectiveAmount;
     const d = selectedDate;
     const newDate = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-    setOverride(transaction.transaction_id, newAmount, newDate, notesInput.trim());
+    const originalName = transaction.name ?? transaction.merchant_name ?? 'Unknown';
+    const newName = nameInput.trim() !== originalName ? (nameInput.trim() || null) : undefined;
+    setOverride(transaction.transaction_id, newAmount, newDate, notesInput.trim(), whoInput, newName);
     setModal('none');
     setShowDatePicker(false);
   }
 
   function clearOverride() {
-    setOverride(transaction.transaction_id, null, undefined, notesInput.trim());
+    setOverride(transaction.transaction_id, null, undefined, notesInput.trim(), whoInput, undefined);
     setModal('none');
     setShowDatePicker(false);
   }
@@ -86,7 +93,7 @@ export default function TransactionRow({ transaction, isExcluded, onPress, onDel
                   <Text style={{ fontSize: 10, color: colors.excludedText, fontWeight: '600' }}>excluded</Text>
                 </View>
               )}
-              {transaction.offlineQueued && (
+              {(transaction.offlineQueued || isPendingOverride) && (
                 <View style={{ marginLeft: 8, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, backgroundColor: colors.warning + '33' }}>
                   <Text style={{ fontSize: 10, color: colors.warning, fontWeight: '600' }}>queued</Text>
                 </View>
@@ -141,27 +148,49 @@ export default function TransactionRow({ transaction, isExcluded, onPress, onDel
 
                   {!showDatePicker && (
                     <>
+                      <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: 6 }}>Name</Text>
+                      <TextInput
+                        value={nameInput}
+                        onChangeText={setNameInput}
+                        placeholder="Transaction name"
+                        placeholderTextColor={colors.textMuted}
+                        style={{ backgroundColor: colors.background, color: colors.text, borderRadius: 8, borderWidth: 1, borderColor: colors.border, padding: 12, fontSize: 14, marginBottom: 8 }}
+                      />
+                      <View style={{ flexDirection: 'row', gap: 6, marginBottom: 14 }}>
+                        {['Food', 'Grocery', 'Misc'].map(label => (
+                          <Pressable
+                            key={label}
+                            onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setNameInput(label); }}
+                            style={({ pressed }) => ({ paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6, borderWidth: 1, borderColor: nameInput === label ? colors.accent : colors.border, backgroundColor: pressed ? 'rgba(255,255,255,0.12)' : nameInput === label ? colors.accent + '22' : colors.background })}
+                          >
+                            <Text style={{ fontSize: 12, color: nameInput === label ? colors.accent : colors.textMuted, fontWeight: '500' }}>{label}</Text>
+                          </Pressable>
+                        ))}
+                      </View>
+
                       <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: 6 }}>Amount</Text>
                       <TextInput
                         value={amountInput}
                         onChangeText={setAmountInput}
                         keyboardType="decimal-pad"
-                        style={{
-                          backgroundColor: colors.background,
-                          color: colors.text,
-                          borderRadius: 8,
-                          borderWidth: 1,
-                          borderColor: colors.border,
-                          padding: 12,
-                          fontSize: 18,
-                          fontWeight: '600',
-                          marginBottom: 14,
-                          textAlign: 'center',
-                        }}
+                        style={{ backgroundColor: colors.background, color: colors.text, borderRadius: 8, borderWidth: 1, borderColor: colors.border, padding: 12, fontSize: 18, fontWeight: '600', textAlign: 'center', marginBottom: 14 }}
                         selectTextOnFocus
                       />
 
-                      <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: 6 }}>Notes</Text>
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                        <Text style={{ color: colors.textMuted, fontSize: 12 }}>Notes</Text>
+                        <View style={{ flexDirection: 'row', gap: 6 }}>
+                          {[['me', 'Me'], ['both', 'Both'], ['others', 'Others']].map(([val, label]) => (
+                            <Pressable
+                              key={val}
+                              onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setWhoInput(val); }}
+                              style={({ pressed }) => ({ paddingHorizontal: 10, paddingVertical: 3, borderRadius: 6, borderWidth: 1, borderColor: whoInput === val ? colors.accent : colors.border, backgroundColor: pressed ? 'rgba(255,255,255,0.12)' : whoInput === val ? colors.accent + '22' : 'transparent' })}
+                            >
+                              <Text style={{ fontSize: 11, color: whoInput === val ? colors.accent : colors.textMuted, fontWeight: '600' }}>{label}</Text>
+                            </Pressable>
+                          ))}
+                        </View>
+                      </View>
                       <TextInput
                         value={notesInput}
                         onChangeText={setNotesInput}
@@ -183,17 +212,26 @@ export default function TransactionRow({ transaction, isExcluded, onPress, onDel
                       themeVariant={theme.mode === 'dark' ? 'dark' : 'light'}
                     />
                   )}
-                  <Pressable
-                    onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setShowDatePicker(prev => !prev); }}
-                    style={({ pressed }) => ({
-                      borderRadius: 8, borderWidth: 1,
-                      borderColor: showDatePicker ? colors.accent : colors.border,
-                      padding: 12, marginBottom: 20, alignItems: 'center',
-                      backgroundColor: pressed ? 'rgba(255,255,255,0.12)' : colors.background,
-                    })}
-                  >
-                    <Text style={{ color: colors.accent, fontSize: 15, fontWeight: '500' }}>{dateLabel}</Text>
-                  </Pressable>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 20, gap: 6 }}>
+                    <Pressable
+                      onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); const d = new Date(selectedDate); d.setDate(d.getDate() - 1); setSelectedDate(d); }}
+                      style={({ pressed }) => ({ paddingHorizontal: 12, paddingVertical: 12, borderRadius: 8, borderWidth: 1, borderColor: colors.border, backgroundColor: pressed ? 'rgba(255,255,255,0.12)' : colors.background })}
+                    >
+                      <Text style={{ color: colors.text, fontSize: 16 }}>‹</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setShowDatePicker(prev => !prev); }}
+                      style={({ pressed }) => ({ flex: 1, borderRadius: 8, borderWidth: 1, borderColor: showDatePicker ? colors.accent : colors.border, padding: 12, alignItems: 'center', backgroundColor: pressed ? 'rgba(255,255,255,0.12)' : colors.background })}
+                    >
+                      <Text style={{ color: colors.accent, fontSize: 15, fontWeight: '500' }}>{dateLabel}</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); const d = new Date(selectedDate); d.setDate(d.getDate() + 1); if (d <= new Date()) setSelectedDate(d); }}
+                      style={({ pressed }) => ({ paddingHorizontal: 12, paddingVertical: 12, borderRadius: 8, borderWidth: 1, borderColor: colors.border, backgroundColor: pressed ? 'rgba(255,255,255,0.12)' : colors.background })}
+                    >
+                      <Text style={{ color: colors.text, fontSize: 16 }}>›</Text>
+                    </Pressable>
+                  </View>
 
                   <View style={{ flexDirection: 'row', gap: 8 }}>
                     {transaction.manual && onDelete ? (

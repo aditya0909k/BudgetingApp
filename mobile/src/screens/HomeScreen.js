@@ -65,7 +65,7 @@ async function flushOfflineQueue() {
         const res = await fetch(`${API_BASE_URL}/api/transactions/add`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: tx.name, amount: tx.amount, date: tx.date }),
+          body: JSON.stringify({ name: tx.name, amount: tx.amount, date: tx.date, ...(tx.notes ? { notes: tx.notes } : {}), ...(tx.who && tx.who !== 'me' ? { who: tx.who } : {}) }),
         });
         if (!res.ok) remaining.push(tx);
       } catch {
@@ -77,7 +77,7 @@ async function flushOfflineQueue() {
 }
 
 export default function HomeScreen() {
-  const { weeklyBudget, excludedIds, toggleExcluded, overrides, theme } = useAppContext();
+  const { weeklyBudget, excludedIds, toggleExcluded, overrides, pendingOverrideIds, flushOverrideQueue, theme } = useAppContext();
   const colors = getTheme(theme.mode, theme.accentColor);
 
   const [transactions, setTransactions] = useState([]);
@@ -102,6 +102,7 @@ export default function HomeScreen() {
   const [addDate, setAddDate] = useState(new Date());
   const [addDateOpen, setAddDateOpen] = useState(false);
   const [addNotes, setAddNotes] = useState('');
+  const [addWho, setAddWho] = useState('me');
 
   // Calculator
   const [calcVisible, setCalcVisible] = useState(false);
@@ -111,8 +112,9 @@ export default function HomeScreen() {
   const onlyManual = accounts.length === 0 || accounts.every(a => a.accountId === 'manual');
 
   const fetchData = useCallback(async (isRefresh = false) => {
-    // Flush any queued offline transactions first
+    // Flush any queued offline transactions and overrides first
     await flushOfflineQueue();
+    await flushOverrideQueue();
 
     if (isRefresh) setRefreshing(true);
     else setLoading(true);
@@ -183,7 +185,7 @@ export default function HomeScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [flushOverrideQueue]);
 
   useFocusEffect(
     useCallback(() => {
@@ -230,7 +232,7 @@ export default function HomeScreen() {
     const groups = {};
     for (const t of filteredTransactions) {
       if (excludedIds.has(t.transaction_id) || (overrides[t.transaction_id]?.amount ?? t.amount) <= 0) continue;
-      const key = (t.name || t.merchant_name || 'Other').trim();
+      const key = (overrides[t.transaction_id]?.name ?? t.name ?? t.merchant_name ?? 'Other').trim();
       const amt = overrides[t.transaction_id]?.amount ?? t.amount;
       groups[key] = (groups[key] || 0) + amt;
     }
@@ -239,6 +241,21 @@ export default function HomeScreen() {
     const otherAmt = sorted.slice(4).reduce((s, [, v]) => s + v, 0);
     if (otherAmt > 0) top.push(['Other', otherAmt]);
     return top;
+  }, [filteredTransactions, excludedIds, overrides]);
+
+  // Me vs Others breakdown
+  const meVsOthers = useMemo(() => {
+    let me = 0, others = 0;
+    for (const t of filteredTransactions) {
+      if (excludedIds.has(t.transaction_id)) continue;
+      const amt = overrides[t.transaction_id]?.amount ?? t.amount;
+      if (amt <= 0) continue;
+      const who = overrides[t.transaction_id]?.who ?? t.who ?? 'me';
+      if (who === 'me') me += amt;
+      else if (who === 'others') others += amt;
+      else if (who === 'both') { me += amt / 2; others += amt / 2; }
+    }
+    return { me, others };
   }, [filteredTransactions, excludedIds, overrides]);
 
   // Split transactions: today vs older
@@ -334,6 +351,7 @@ export default function HomeScreen() {
     setAddDate(new Date());
     setAddDateOpen(false);
     setAddNotes('');
+    setAddWho('me');
     setCalcVisible(false);
     setAddVisible(true);
   }
@@ -343,7 +361,7 @@ export default function HomeScreen() {
     if (!addName.trim() || !isFinite(amount) || amount <= 0) return;
     const d = addDate;
     const dateStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-    const txPayload = { name: addName.trim(), amount, date: dateStr, ...(addNotes.trim() ? { notes: addNotes.trim() } : {}) };
+    const txPayload = { name: addName.trim(), amount, date: dateStr, ...(addNotes.trim() ? { notes: addNotes.trim() } : {}), ...(addWho !== 'me' ? { who: addWho } : {}) };
     setAddVisible(false);
     try {
       const res = await fetch(`${API_BASE_URL}/api/transactions/add`, {
@@ -368,6 +386,7 @@ export default function HomeScreen() {
         amount: txPayload.amount,
         date: txPayload.date,
         notes: txPayload.notes,
+        who: txPayload.who,
         account_id: 'manual',
         manual: true,
         offlineQueued: true,
@@ -405,7 +424,7 @@ export default function HomeScreen() {
         ListHeaderComponent={
           <View>
             <Pressable onLongPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); setGaugePopover(true); }} delayLongPress={400}>
-              <ArcGauge spent={totalSpent} budget={weeklyBudget} accentColor={theme.accentColor} period="week" />
+              <ArcGauge spent={totalSpent} budget={weeklyBudget} accentColor={theme.accentColor} period="week" meRatio={meVsOthers.others > 0 && totalSpent > 0 ? meVsOthers.me / totalSpent : null} />
             </Pressable>
 
             {/* Bank status / Add transaction bar */}
@@ -586,9 +605,9 @@ export default function HomeScreen() {
                   />
                   <Pressable
                     onPress={openCalc}
-                    style={({ pressed }) => ({ width: 48, borderRadius: 8, borderWidth: 1, borderColor: calcVisible ? colors.accent : colors.border, backgroundColor: pressed ? 'rgba(255,255,255,0.12)' : colors.background, alignItems: 'center', justifyContent: 'center' })}
+                    style={({ pressed }) => ({ width: 44, borderRadius: 8, borderWidth: 1, borderColor: calcVisible ? colors.accent : colors.border, backgroundColor: pressed ? 'rgba(255,255,255,0.12)' : colors.background, alignItems: 'center', justifyContent: 'center' })}
                   >
-                    <Text style={{ fontSize: 20, color: colors.textMuted }}>±</Text>
+                    <Text style={{ fontSize: 18, color: colors.textMuted }}>±</Text>
                   </Pressable>
                 </View>
 
@@ -673,7 +692,20 @@ export default function HomeScreen() {
 
                 {!addDateOpen && (
                   <>
-                    <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: 6 }}>Notes <Text style={{ color: colors.textMuted, fontWeight: '400' }}>(optional)</Text></Text>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                      <Text style={{ color: colors.textMuted, fontSize: 12 }}>Notes</Text>
+                      <View style={{ flexDirection: 'row', gap: 6 }}>
+                        {[['me', 'Me'], ['both', 'Both'], ['others', 'Others']].map(([val, label]) => (
+                          <Pressable
+                            key={val}
+                            onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setAddWho(val); }}
+                            style={({ pressed }) => ({ paddingHorizontal: 10, paddingVertical: 3, borderRadius: 6, borderWidth: 1, borderColor: addWho === val ? colors.accent : colors.border, backgroundColor: pressed ? 'rgba(255,255,255,0.12)' : addWho === val ? colors.accent + '22' : 'transparent' })}
+                          >
+                            <Text style={{ fontSize: 11, color: addWho === val ? colors.accent : colors.textMuted, fontWeight: '600' }}>{label}</Text>
+                          </Pressable>
+                        ))}
+                      </View>
+                    </View>
                     <TextInput
                       value={addNotes}
                       onChangeText={setAddNotes}
@@ -705,33 +737,47 @@ export default function HomeScreen() {
         <TouchableWithoutFeedback onPress={() => setGaugePopover(false)}>
           <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center' }}>
             <TouchableWithoutFeedback>
-              <View style={{ width: 280, backgroundColor: colors.card, borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 20 }}>
-                <Text style={{ color: colors.text, fontSize: 15, fontWeight: '700', marginBottom: 14 }}>This Week</Text>
+              <View style={{ width: 320, backgroundColor: colors.card, borderRadius: 20, borderWidth: 1, borderColor: colors.border, padding: 28 }}>
+                <Text style={{ color: colors.text, fontSize: 18, fontWeight: '700', marginBottom: 18 }}>This Week</Text>
                 {categoryBreakdown.length === 0 ? (
-                  <Text style={{ color: colors.textMuted, fontSize: 13 }}>No transactions yet</Text>
+                  <Text style={{ color: colors.textMuted, fontSize: 15 }}>No transactions yet</Text>
                 ) : (
                   categoryBreakdown.map(([cat, amt]) => {
                     const pct = totalSpent > 0 ? amt / totalSpent : 0;
                     return (
-                      <View key={cat} style={{ marginBottom: 10 }}>
-                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 }}>
-                          <Text style={{ color: colors.text, fontSize: 13 }}>{cat}</Text>
-                          <View style={{ flexDirection: 'row', gap: 8 }}>
-                            <Text style={{ color: colors.textMuted, fontSize: 13 }}>{Math.round(pct * 100)}%</Text>
-                            <Text style={{ color: colors.text, fontSize: 13, fontWeight: '600' }}>{formatCurrency(amt)}</Text>
+                      <View key={cat} style={{ marginBottom: 14 }}>
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
+                          <Text style={{ color: colors.text, fontSize: 15 }}>{cat}</Text>
+                          <View style={{ flexDirection: 'row', gap: 10 }}>
+                            <Text style={{ color: colors.textMuted, fontSize: 15 }}>{Math.round(pct * 100)}%</Text>
+                            <Text style={{ color: colors.text, fontSize: 15, fontWeight: '600' }}>{formatCurrency(amt)}</Text>
                           </View>
                         </View>
-                        <View style={{ height: 3, borderRadius: 2, backgroundColor: colors.gaugeTrack }}>
+                        <View style={{ height: 4, borderRadius: 2, backgroundColor: colors.gaugeTrack }}>
                           <View style={{ width: `${Math.round(pct * 100)}%`, height: '100%', borderRadius: 2, backgroundColor: colors.accent }} />
                         </View>
                       </View>
                     );
                   })
                 )}
-                <View style={{ borderTopWidth: 1, borderTopColor: colors.border, marginTop: 6, paddingTop: 10, flexDirection: 'row', justifyContent: 'space-between' }}>
-                  <Text style={{ color: colors.textMuted, fontSize: 13 }}>Total</Text>
-                  <Text style={{ color: colors.text, fontSize: 13, fontWeight: '700' }}>{formatCurrency(totalSpent)} <Text style={{ color: colors.textMuted, fontWeight: '400' }}>of {formatCurrency(weeklyBudget)}</Text></Text>
+                <View style={{ borderTopWidth: 1, borderTopColor: colors.border, marginTop: 8, paddingTop: 14, flexDirection: 'row', justifyContent: 'space-between' }}>
+                  <Text style={{ color: colors.textMuted, fontSize: 15 }}>Total</Text>
+                  <Text style={{ color: colors.text, fontSize: 15, fontWeight: '700' }}>{formatCurrency(totalSpent)} <Text style={{ color: colors.textMuted, fontWeight: '400' }}>of {formatCurrency(weeklyBudget)}</Text></Text>
                 </View>
+
+                {(meVsOthers.others > 0) && (
+                  <View style={{ borderTopWidth: 1, borderTopColor: colors.border, marginTop: 14, paddingTop: 14 }}>
+                    <Text style={{ color: colors.textMuted, fontSize: 12, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 10 }}>Who</Text>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
+                      <Text style={{ color: colors.text, fontSize: 15 }}>Me</Text>
+                      <Text style={{ color: colors.text, fontSize: 15, fontWeight: '600' }}>{formatCurrency(meVsOthers.me)}</Text>
+                    </View>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                      <Text style={{ color: colors.text, fontSize: 15 }}>Others</Text>
+                      <Text style={{ color: colors.text, fontSize: 15, fontWeight: '600' }}>{formatCurrency(meVsOthers.others)}</Text>
+                    </View>
+                  </View>
+                )}
               </View>
             </TouchableWithoutFeedback>
           </View>
