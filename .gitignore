@@ -25,6 +25,9 @@ android/
 # Server data (contains bank tokens)
 server/data/
 
+# Fly app config (contains the live app name/URL)
+server/fly.toml
+
 # Claude Code
 .claude/
 
