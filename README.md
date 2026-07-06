@@ -83,10 +83,15 @@ fly deploy
 Takes ~2 minutes. Note the URL shown — something like `https://my-budget-server-XXXX.fly.dev`.
 
 ### Update the app URL
-Open `mobile/src/config.js` and set:
-```js
-export const API_BASE_URL = 'https://my-budget-server-XXXX.fly.dev';
 ```
+cd ~/Documents/BudgetingApp/mobile
+cp .env.example .env
+```
+Open `.env` and set:
+```
+API_BASE_URL=https://my-budget-server-XXXX.fly.dev
+```
+`.env` is gitignored — your server URL never gets committed.
 
 ---
 
@@ -231,7 +236,7 @@ All data stays on your own Fly.io server. Nothing goes to any third party. Data 
 
 ### "Could not reach server" / app shows error
 - Run `fly status` in Terminal — server should be `started`
-- Check `mobile/src/config.js` has the correct Fly.io URL
+- Check `mobile/.env` has the correct Fly.io URL
 - Check server logs: `fly logs`
 
 ### Transactions I added aren't showing
