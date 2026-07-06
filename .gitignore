@@ -16,6 +16,7 @@ android/
 # Environment & secrets
 .env
 .env.*
+!.env.example
 *.pem
 *.p8
 *.p12
